@@ -123,7 +123,12 @@ Sprint 23 (2026-11-03): round spec for spawn failures and fake deaths (merged; 2
 - [x] Fix: a player still spawning at the 10 s spawn timeout is dropped from the round with one warning and spectates, instead of holding the round open or appearing at Start mid-round.
 - [x] `RoundTestPlayers`: `failLoadCharacter`, `holdLoadCharacter`, `kill`, `_test.pretendLiveServer`; specs cover LoadCharacter failure, spawn timeout, a fake dying, and attach refusing on a live server.
 
+Sprint 24 (2026-11-03): sprint-23 reviewer follow-ups on RoundService (merged; 24 of 24 RoundService tests pass in a one-player Studio play-test, not played in a live round).
+- [x] A player who leaves the server while spawning is dropped from the round with its own warning; the spawn-timeout drop is commented as a gameplay fix, not a test hook.
+- [x] `RoundTestPlayers`: a held load waits on an event instead of polling every frame; spec `collectWarnings` restores the previous hook (nestable); new spec for the left-while-spawning case.
+
 ## Needs a playtest
+- Sprint 24: a player who leaves mid-spawn in a live server is dropped cleanly and the round starts for everyone else.
 - Sprint 23: a slow-loading player in a live server spectates that round and joins the next; `RoundTestPlayers` can't attach on a real live server (only simulated in Studio). Still open from sprint 22: warnings from main.server's RoundService instance aren't caught by the spec.
 - Full round in a live multi-player server (sprints 20–21 specs passed in Studio with one real player; sprint 21 used fake players, which Monster and NoiseService ignore): join mid-round, spectators, escape pays once.
 - HUD goal line (sprints 17–19): Shift still sprints after respawn; text follows round state and `Escaped` in a live round; check on a real phone and desktop (simulated 375x667 layout passes; screens under ~370 px would touch the Coins column).

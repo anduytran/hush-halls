@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 24: leaving while spawning
+- **A player who leaves during the spawn wait is dropped from the round with a separate "left the server" warning**, so logs tell a slow load from a quit. Alternative considered: dropping them silently; rejected because the spec treats every drop as worth reporting.
+
 ## 2026-11-03 — Sprint 23: spawn timeout drops the player
 - **A player whose spawn outlasts SPAWN_TIMEOUT (10 s) is removed from that round and spectates**, so one stuck load can't hold the round or drop someone at Start mid-round. Alternative considered: let the late spawn join the running round; rejected as it gives a head start into an already-moving round and a spec showed it could hang the start.
 
