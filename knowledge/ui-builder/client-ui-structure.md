@@ -8,4 +8,4 @@
 - Notes: ui-vault/Screens/HUD.md, ui-vault/Screens/Shop.md.
 - Hud spec hooks: `Hud._test.hooks(gui)` (Studio only, per mounted gui). Specs mount their own HUD; never write replicated State from a client spec.
 - Phone layout check without a device: move a gui's children into a 375x667 offset Frame and read AbsolutePosition/AbsoluteSize/TextFits (see Hud.cloud.spec.luau).
-- Top-centre column budget at 375 px: centre panels must stay ≤160 px wide to clear Coins/Shop (right column starts at W-104).
+- Top-centre column budget at 375 px: centre panels (RoundInfo, GoalPanel) are 160-360 px wide (0.28 scale), and GoalPanel still clears Coins/Shop at 375 px (right column starts at W-104). Keep new centre panels no wider than that.

@@ -23,6 +23,11 @@ local FONT_MEDIUM = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.
 
 local Hud = {}
 
+-- True while some mounted HUD holds the global HushSprint binding
+local sprintOwned = false
+-- Live HUDs that could take over the binding when its owner is destroyed
+local sprintCandidates: { { bind: () -> () } } = {}
+
 -- Studio-only spec hooks per mounted gui (weak keys, so destroyed HUDs are collected)
 local testHooks: { [ScreenGui]: any } = setmetatable({}, { __mode = "k" }) :: any
 if RunService:IsStudio() then
@@ -130,9 +135,12 @@ function Hud.mount()
 	end
 	placeGoal()
 
-	-- Signal connections, dropped when the HUD is destroyed or the player leaves
+	-- Signal connections, dropped when the HUD is destroyed
 	local connections: { RBXScriptConnection } = {}
 	local alive = true
+	-- Only the HUD that bound the global HushSprint action may unbind it
+	local boundSprint = false
+	local candidate = { bind = function() end }
 	connections[1] = top:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeGoal)
 	local function disconnectAll()
 		alive = false
@@ -140,17 +148,22 @@ function Hud.mount()
 			connection:Disconnect()
 		end
 		table.clear(connections)
-		ContextActionService:UnbindAction("HushSprint")
-	end
-	gui.Destroying:Connect(disconnectAll)
-	table.insert(
-		connections,
-		Players.PlayerRemoving:Connect(function(leaving)
-			if leaving == player then
-				disconnectAll()
+		local index = table.find(sprintCandidates, candidate)
+		if index then
+			table.remove(sprintCandidates, index)
+		end
+		if boundSprint then
+			boundSprint = false
+			sprintOwned = false
+			ContextActionService:UnbindAction("HushSprint")
+			-- Hand the binding to another live HUD so Shift keeps working
+			local successor = sprintCandidates[1]
+			if successor then
+				successor.bind()
 			end
-		end)
-	)
+		end
+	end
+	table.insert(connections, gui.Destroying:Connect(disconnectAll))
 
 	local function setGoal(roundState: any, escaped: boolean)
 		if roundState == "Running" and escaped then
@@ -379,14 +392,24 @@ function Hud.mount()
 		end)
 	)
 
-	ContextActionService:BindAction("HushSprint", function(_, inputState)
-		if inputState == Enum.UserInputState.Begin then
-			setSprint("Shift", true)
-		elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
-			setSprint("Shift", false)
+	-- The action name is global: a second HUD (such as a spec's) must not replace or remove the live binding
+	candidate.bind = function()
+		if sprintOwned or not alive then
+			return
 		end
-		return Enum.ContextActionResult.Pass
-	end, false, Enum.KeyCode.LeftShift)
+		sprintOwned = true
+		boundSprint = true
+		ContextActionService:BindAction("HushSprint", function(_, inputState)
+			if inputState == Enum.UserInputState.Begin then
+				setSprint("Shift", true)
+			elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
+				setSprint("Shift", false)
+			end
+			return Enum.ContextActionResult.Pass
+		end, false, Enum.KeyCode.LeftShift)
+	end
+	table.insert(sprintCandidates, candidate)
+	candidate.bind()
 
 	return gui
 end

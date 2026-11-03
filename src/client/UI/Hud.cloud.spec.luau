@@ -3,6 +3,7 @@
 -- On a server runner the module has no LocalPlayer and the single test below passes without checking anything.
 -- The goal text is driven through Hud._test.hooks(gui).setGoal (Studio only); replicated State is never written.
 local Hud = require("./Hud")
+local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -61,9 +62,10 @@ local function stateSnapshot(): { [string]: any }
 	return state:GetAttributes()
 end
 
--- Moves the HUD's panels, plus the live ShopButton from ShopMenu, into a 375x667 frame so they lay
--- out as on a portrait phone. Returns the frame and a restore function that puts everything back.
-local function phoneViewport(): (Frame, () -> ())
+-- Builds a throwaway HUD and a stand-in Shop button (same geometry as ShopMenu's ShopButton) inside a
+-- 375x667 frame, so they lay out as on a portrait phone. The live HUD and Shop button are never touched.
+-- Returns the frame, the throwaway HUD's panels by name, its test hooks and a cleanup function.
+local function phoneViewport(): (Frame, { [string]: GuiObject }, any, () -> ())
 	local holder = Instance.new("ScreenGui")
 	holder.Name = "HudPhoneTest"
 	holder.IgnoreGuiInset = true
@@ -73,30 +75,33 @@ local function phoneViewport(): (Frame, () -> ())
 	viewport.Parent = holder
 	holder.Parent = player:WaitForChild("PlayerGui")
 
-	local moved: { { child: GuiObject, home: Instance } } = {}
-	local function move(child: GuiObject)
-		table.insert(moved, { child = child, home = child.Parent :: Instance })
-		child.Parent = viewport
-	end
-	for _, child in gui:GetChildren() do
+	local throwaway = Hud.mount()
+	local throwawayHooks = hudTest.hooks(throwaway)
+	local panels: { [string]: GuiObject } = {}
+	for _, child in throwaway:GetChildren() do
 		if child:IsA("GuiObject") then
-			move(child)
+			child.Parent = viewport
+			panels[child.Name] = child
 		end
 	end
-	local shopGui = player.PlayerGui:FindFirstChild("ShopMenu")
-	local shopButton = if shopGui then shopGui:FindFirstChild("ShopButton") else nil
-	if shopButton and shopButton:IsA("GuiObject") then
-		move(shopButton)
-	end
+	local shop = Instance.new("Frame")
+	shop.Name = "ShopButton"
+	shop.AnchorPoint = Vector2.new(1, 0)
+	shop.Position = UDim2.new(1, -8, 0, 72)
+	shop.Size = UDim2.fromScale(0.14, 0.07)
+	local shopLimit = Instance.new("UISizeConstraint")
+	shopLimit.MinSize = Vector2.new(96, 44)
+	shopLimit.MaxSize = Vector2.new(200, 56)
+	shopLimit.Parent = shop
+	shop.Parent = viewport
+	panels.ShopButton = shop
 	settle(5)
 
-	local function restore()
-		for _, entry in moved do
-			entry.child.Parent = entry.home
-		end
+	local function cleanup()
+		throwaway:Destroy()
 		holder:Destroy()
 	end
-	return viewport, restore
+	return viewport, panels, throwawayHooks, cleanup
 end
 
 local function rect(g: GuiObject, origin: Vector2): (Vector2, Vector2)
@@ -111,27 +116,24 @@ local function overlaps(a: GuiObject, b: GuiObject): boolean
 end
 
 -- The phone checks, run inside pcall by the test so the panels are always restored afterwards
-local function checkPhoneLayout(viewport: Frame)
+local function checkPhoneLayout(viewport: Frame, panels: { [string]: GuiObject }, phoneHooks: any)
+	local phoneGoalPanel = panels.GoalPanel
+	local phoneGoal = phoneGoalPanel:FindFirstChild("GoalText") :: TextLabel
 	local origin = viewport.AbsolutePosition
-	local min, max = rect(goalPanel, origin)
+	local min, max = rect(phoneGoalPanel, origin)
 	assert(min.X >= 0 and max.X <= 375 and min.Y >= 0 and max.Y <= 667, `GoalPanel off screen: {min} - {max}`)
-	assert(goalPanel.AbsoluteSize.X <= 360, "GoalPanel wider than 360 px")
-	for _, other in viewport:GetChildren() do
-		if other:IsA("GuiObject") and other ~= goalPanel and other.Visible then
-			assert(not overlaps(goalPanel, other), "GoalPanel overlaps " .. other.Name)
+	assert(phoneGoalPanel.AbsoluteSize.X <= 360, "GoalPanel wider than 360 px")
+	for name, other in panels do
+		if name ~= "GoalPanel" and other.Visible then
+			assert(not overlaps(phoneGoalPanel, other), "GoalPanel overlaps " .. name)
 		end
 	end
-	-- The real ShopButton (ShopMenu.luau, UDim2.new(1,-8,0,72)); it was moved into the viewport above
-	local shop = viewport:FindFirstChild("ShopButton")
-	assert(shop and shop:IsA("GuiObject"), "ShopButton not found in the phone viewport; is ShopMenu mounted?")
-	assert(not overlaps(goalPanel, shop), "GoalPanel overlaps the Shop button")
-	-- Coins sits in the same right-hand column; the goal line must stay clear of its left edge
-	local coins = viewport:FindFirstChild("Coins") :: Frame
-	assert(max.X < coins.AbsolutePosition.X - origin.X, "GoalPanel reaches into the Coins/Shop column")
+	-- Coins and the Shop button share the right-hand column; the goal line must stay clear of its left edge
+	assert(max.X < panels.Coins.AbsolutePosition.X - origin.X, "GoalPanel reaches into the Coins/Shop column")
 	for _, case in CASES do
-		test.setGoal(case.round, case.escaped)
+		phoneHooks.setGoal(case.round, case.escaped)
 		settle()
-		assert(goal.TextFits, `"{goal.Text}" does not fit the GoalPanel on a 375x667 phone`)
+		assert(phoneGoal.TextFits, `"{phoneGoal.Text}" does not fit the GoalPanel on a 375x667 phone`)
 	end
 end
 
@@ -208,9 +210,11 @@ return {
 	end,
 
 	["on a 375x667 phone the goal panel fits and overlaps nothing"] = function()
-		local viewport, restore = phoneViewport()
-		local ok, err = pcall(checkPhoneLayout, viewport)
-		restore()
+		local liveParent = gui.Parent
+		local viewport, panels, phoneHooks, cleanup = phoneViewport()
+		local ok, err = pcall(checkPhoneLayout, viewport, panels, phoneHooks)
+		cleanup()
+		assert(gui.Parent == liveParent and goalPanel.Parent == gui, "phone test must not move the live HUD")
 		if not ok then
 			error(err, 0)
 		end
@@ -227,5 +231,27 @@ return {
 		-- Destroying is handled a frame later, so give it one frame before counting
 		settle(1)
 		assert(extraTest.connectionCount() == 0, "connections left after Destroy: " .. extraTest.connectionCount())
+	end,
+
+	["destroying a second HUD leaves the live sprint binding intact"] = function()
+		local function sprintBound(): boolean
+			return ContextActionService:GetAllBoundActionInfo()["HushSprint"] ~= nil
+		end
+		assert(sprintBound(), "HushSprint should be bound by the first mounted HUD")
+		local extra = Hud.mount()
+		extra:Destroy()
+		settle(2)
+		assert(sprintBound(), "destroying a second HUD unbound the live HushSprint action")
+	end,
+
+	["destroying several extra HUDs in a row keeps the sprint binding"] = function()
+		-- The owner hand-over itself (owner destroyed while another HUD lives) is checked by hand in
+		-- Studio: the shared HUD above must stay alive for the other tests, so it can't be the one destroyed.
+		local a = Hud.mount()
+		local b = Hud.mount()
+		a:Destroy()
+		b:Destroy()
+		settle(2)
+		assert(ContextActionService:GetAllBoundActionInfo()["HushSprint"] ~= nil, "HushSprint lost")
 	end,
 }
