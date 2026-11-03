@@ -1,5 +1,5 @@
 ---
-status: in-progress   # receipts hardened in sprint 2, sprint 4 reserve → grant → mark done (grant outside UpdateAsync), sprint 5 per-attempt tokens, sprint 8 no stale takeover (owner-only markers, released state, late results retried until recorded), sprint 9 24 h stale rule + retry cap + shutdown drain, sprint 10 60 s heartbeat on live markers + 20 s drain, blocked on Creator Hub IDs
+status: in-progress   # receipts hardened in sprint 2, sprint 4 reserve → grant → mark done (grant outside UpdateAsync), sprint 5 per-attempt tokens, sprint 8 no stale takeover (owner-only markers, released state, late results retried until recorded), sprint 9 24 h stale rule + retry cap + shutdown drain, sprint 10 60 s heartbeat on live markers + 20 s drain, sprint 11 heartbeat capped at 30 min + one-time restamp + no regrant after give-up, blocked on Creator Hub IDs
 tags: [design, mechanic]
 ---
 # Products and grants

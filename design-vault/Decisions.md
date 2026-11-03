@@ -2,6 +2,12 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 11: receipt follow-ups
+- **Heartbeats stop after 30 min** (MAX_HEARTBEAT_AGE), replacing sprint 10's "busy forever" cost. Accepted cost: a handler yielding over 30 min + 24 h may be granted twice.
+- **No-time markers are restamped once only**, so a marker can't be extended forever.
+- **A server that gave up writing a receipt's result never grants it again** (answers NotProcessedYet).
+- **Test hooks exist only in Studio**, so live servers never expose them.
+
 ## 2026-11-03 — Sprint 10: receipt follow-ups
 - **Live attempts heartbeat their pending marker every 60 s**, so the 24 h stale rule only frees markers left by dead servers. Accepted cost: a grant handler that never returns keeps its receipt busy for good.
 - **A pending marker with no time is busy**, not released; the reserve restamps it so it can go stale a day later.

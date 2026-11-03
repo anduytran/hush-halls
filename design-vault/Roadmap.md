@@ -69,8 +69,15 @@ Sprint 10 (2026-11-03): sprint-9 reviewer follow-ups on receipts (merged; script
 - [x] BindToClose waits 20 s (was 25). Warnings name the receipt key and go through a hookable logger.
 - [x] `Monetization.cloud.spec.luau` gained a fake timer (`advance`) and warn capture. Known cost: a handler that never returns keeps its receipt busy forever.
 
+Sprint 11 (2026-11-03): sprint-10 reviewer follow-ups on receipts (merged; scripter reports checks pass, not run in a live round).
+- [x] A heartbeat stops (one warning) after 30 min, so a handler that never returns lets its marker go stale like a dead server's. Known cost: a handler yielding over 30 min + 24 h can be granted twice.
+- [x] A marker with no time is restamped only once; after that it is just busy.
+- [x] A receipt whose result write was given up on is never granted again by that server.
+- [x] Test hooks (`_processReceipt`, `_test`) exist only in Studio. Outside Studio the spec only checks the hooks are absent.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–10.
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–11.
+- Run `Monetization.cloud.spec.luau` in Studio (sprint 11: 30 min heartbeat cap, one-time restamp, no regrant after give-up, hooks absent outside Studio).
 - Run `Monetization.cloud.spec.luau` (sprint 10: heartbeat, no-time restamp, 20 s drain, warn text).
 - Run `Monetization.cloud.spec.luau` (sprint 9: 24 h stale rule, retry cap, token-checked release, shutdown drain).
 - Run `SpeedSampler.spec.luau` (sprint 7: teleports hold the previous reading).
