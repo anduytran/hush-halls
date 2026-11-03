@@ -131,8 +131,13 @@ Sprint 25 (2026-11-03): live round smoke in Studio (merged; no game code changed
 - [x] Walking (10 studs/s) to the Exit stays silent, the monster stays parked, escape pays 10 coins and the round ends early; sprinting toward the Exit gets you caught.
 - [x] Clean output apart from 6 startup "ContentId rbxassetid://203785492 … Asset type does not match" warnings (engine/avatar noise, not from src/). Notes in `knowledge/scripter/live-smoke.md`.
 
+Sprint 26 (2026-11-03): two-player Studio round (merged; one real player plus a `RoundTestPlayers` fake, two full rounds, no src/ errors or warnings).
+- [x] Fake killed, real player escaped (+10, round ended early); fake added mid-round spectated; one fake escaped (+10); sprinting real player caught.
+- [x] Fix: `Escaped` now clears when the round ends, so nobody reads as escaped in the next Lobby. Notes in `knowledge/scripter/live-smoke.md`.
+
 ## Needs a playtest
-- Sprint 25 covered one real player only: a live multi-player server (join mid-round, spectators, several escapes) is still unplayed.
+- Sprints 25–26 had one real client only (Studio tools can only play solo; sprint 26 added a fake player). A true two-client run (Test → Clients and Servers, by hand) is still unplayed: Monster/NoiseService catching a second real player, join mid-round, several escapes. Also check: real player and a fake spawning at the same spot once got stuck climbing at Start.
+- Sprint 26: `Escaped` clearing at Ended → Lobby in a live server (HUD goal line resets).
 - Sprint 24: a player who leaves mid-spawn in a live server is dropped cleanly and the round starts for everyone else.
 - Sprint 23: a slow-loading player in a live server spectates that round and joins the next; `RoundTestPlayers` can't attach on a real live server (only simulated in Studio). Still open from sprint 22: warnings from main.server's RoundService instance aren't caught by the spec.
 - Full round in a live multi-player server (sprints 20–21 specs passed in Studio with one real player; sprint 21 used fake players, which Monster and NoiseService ignore): join mid-round, spectators, escape pays once.

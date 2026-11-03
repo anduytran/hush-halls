@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 26: Escaped clears at round end
+- **`Escaped` is reset for every player when the round ends**, so the next Lobby never shows someone as escaped. Two-player check used one real client plus a fake, because the Studio tools can only play solo. Alternative considered: clearing it at the next round's start; rejected as the Lobby HUD would read stale state.
+
 ## 2026-11-03 — Sprint 25: live smoke, no code change
 - **Two real one-player rounds played in Studio passed, so no game code was changed**, and the repeated startup "Asset type does not match" warnings (rbxassetid://203785492) are treated as engine/avatar noise since nothing in src/ references them. Alternative considered: chasing the warning; rejected as it doesn't come from the project and doesn't repeat.
 
