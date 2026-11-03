@@ -127,7 +127,12 @@ Sprint 24 (2026-11-03): sprint-23 reviewer follow-ups on RoundService (merged; 2
 - [x] A player who leaves the server while spawning is dropped from the round with its own warning; the spawn-timeout drop is commented as a gameplay fix, not a test hook.
 - [x] `RoundTestPlayers`: a held load waits on an event instead of polling every frame; spec `collectWarnings` restores the previous hook (nestable); new spec for the left-while-spawning case.
 
+Sprint 25 (2026-11-03): live round smoke in Studio (merged; no game code changed; two full one-player rounds of the real game played in Studio, nothing broke).
+- [x] Walking (10 studs/s) to the Exit stays silent, the monster stays parked, escape pays 10 coins and the round ends early; sprinting toward the Exit gets you caught.
+- [x] Clean output apart from 6 startup "ContentId rbxassetid://203785492 … Asset type does not match" warnings (engine/avatar noise, not from src/). Notes in `knowledge/scripter/live-smoke.md`.
+
 ## Needs a playtest
+- Sprint 25 covered one real player only: a live multi-player server (join mid-round, spectators, several escapes) is still unplayed.
 - Sprint 24: a player who leaves mid-spawn in a live server is dropped cleanly and the round starts for everyone else.
 - Sprint 23: a slow-loading player in a live server spectates that round and joins the next; `RoundTestPlayers` can't attach on a real live server (only simulated in Studio). Still open from sprint 22: warnings from main.server's RoundService instance aren't caught by the spec.
 - Full round in a live multi-player server (sprints 20–21 specs passed in Studio with one real player; sprint 21 used fake players, which Monster and NoiseService ignore): join mid-round, spectators, escape pays once.
@@ -135,7 +140,7 @@ Sprint 24 (2026-11-03): sprint-23 reviewer follow-ups on RoundService (merged; 2
 - Monster hearing band (sprint 16): a player at 12–14 studs/s is heard but chased after sprinters; `Monster._test` absent on a live server.
 - Walking is silent (sprint 15): a walker at 10 studs/s is never chased, a sprinter is; check the monster still feels threatening when everyone walks.
 - VIP escape pays 20 coins, non-VIP 10 (sprint 14; needs a VIP pass ID to test the real grant).
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–11; sprints 12–13 receipt specs ran in Studio (54, then 59 pass) but not in a live round.
+Apart from sprint 25's one-player Studio rounds, none of these have run in a live round yet. Studio wasn't reachable in sprints 1–11; sprints 12–13 receipt specs ran in Studio (54, then 59 pass) but not in a live round.
 - Buy a product in a published place and check sprint 13: hooks absent on a live server, expired blocks pruned.
 - Buy a product in a published place and check the receipt flow (sprint 12: shared heartbeat window, done-only regrant block).
 - Run `Monetization.cloud.spec.luau` in Studio (sprint 11: 30 min heartbeat cap, one-time restamp, no regrant after give-up, hooks absent outside Studio).

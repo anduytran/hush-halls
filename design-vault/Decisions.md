@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 25: live smoke, no code change
+- **Two real one-player rounds played in Studio passed, so no game code was changed**, and the repeated startup "Asset type does not match" warnings (rbxassetid://203785492) are treated as engine/avatar noise since nothing in src/ references them. Alternative considered: chasing the warning; rejected as it doesn't come from the project and doesn't repeat.
+
 ## 2026-11-03 — Sprint 24: leaving while spawning
 - **A player who leaves during the spawn wait is dropped from the round with a separate "left the server" warning**, so logs tell a slow load from a quit. Alternative considered: dropping them silently; rejected because the spec treats every drop as worth reporting.
 
