@@ -107,7 +107,12 @@ Sprint 19 (2026-11-03): HUD goal line sprint-18 reviewer fixes (merged; spec ran
 - [x] The Shift sprint binding (`HushSprint`) belongs to one HUD: a second HUD (such as a spec's) can't replace or remove it, and a destroyed owner hands it to another live HUD.
 - [x] HUD cleanup runs on gui destroy only (the PlayerRemoving hook was dropped), and the Destroying connection is tracked with the rest.
 
+Sprint 20 (2026-11-03): end-to-end round smoke spec with timing hook (merged; 17 of 17 RoundService tests pass in a one-player Studio play-test, not played in a live round).
+- [x] Studio-only `RoundService._test.setDurations` shortens Lobby/Running/Ended for specs; live lengths unchanged.
+- [x] Smoke spec runs a whole round: Lobby → Running → Ended → Lobby, escape, InRound and Escaped clearing.
+
 ## Needs a playtest
+- Full round in a live multi-player server (sprint 20 smoke spec passed in Studio with one player only): join mid-round, spectators, escape pays once.
 - HUD goal line (sprints 17–19): Shift still sprints after respawn; text follows round state and `Escaped` in a live round; check on a real phone and desktop (simulated 375x667 layout passes; screens under ~370 px would touch the Coins column).
 - Monster hearing band (sprint 16): a player at 12–14 studs/s is heard but chased after sprinters; `Monster._test` absent on a live server.
 - Walking is silent (sprint 15): a walker at 10 studs/s is never chased, a sprinter is; check the monster still feels threatening when everyone walks.
