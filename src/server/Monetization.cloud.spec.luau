@@ -3,8 +3,9 @@
 -- Every test uses its own fake DataStore and counting grant, so no state is shared between tests.
 -- The fake store runs the UpdateAsync callback the way Roblox does: it can run it several times (a conflicting
 -- write re-runs it and only the last result is written), and a test can change storage between runs.
--- Sprint-7 fix: the stale-takeover window is 180 s, and a handler that yields is no longer stopped. Its grant
--- finishes in the background and the receipt is marked done late; those cases are marked below.
+-- Sprint-8 fix: there is no stale-marker takeover. A pending marker is only replaced by the attempt that owns
+-- its token: "done" after a grant, "released" after a refusal or error (a released receipt can be reserved
+-- again). A handler that yields runs in its own task; its late result is written with retries.
 local Monetization = require("./Monetization")
 local processReceipt = Monetization._processReceipt
 local Decision = Enum.ProductPurchaseDecision
@@ -95,14 +96,23 @@ local function countingGrant(store, key, behavior)
 end
 
 -- Sprint-7 fix: a grant that waits 0.05 s before it returns `result`, so the grant yields.
-local function lateGrant(result: boolean)
+-- Sprint-8 fix: `result` "error" makes it throw after the wait.
+local function lateGrant(result: boolean | string)
 	local counter = { calls = 0 }
 	local fn = function(_player)
 		counter.calls += 1
 		task.wait(0.05)
+		if result == "error" then
+			error("late handler exploded")
+		end
 		return result
 	end
 	return counter, fn
+end
+
+local function statusOf(store, key)
+	local held = store.data[key]
+	return if type(held) == "table" then held.status else held
 end
 
 local function assertDecision(actual, expected, label)
@@ -173,66 +183,36 @@ local tests = {
 		assert(counter.calls == 0, `a busy receipt must not be granted, granted {counter.calls} times`)
 	end,
 
-	["a stale pending marker is taken over and granted"] = function()
+	-- Sprint-8 fix: no takeover. A pending marker however old (here a day, with and without a token) is busy.
+	["an old pending marker is never taken over: NotProcessedYet, no grant, marker untouched"] = function()
+		for _, old in
+			{ { status = "pending", at = os.time() - 86400, token = "other" }, { status = "pending", at = 0 } }
+		do
+			local store = newStore()
+			local r = receipt("old-pending")
+			local key = keyOf(r)
+			store.data[key] = old
+			local counter, grant = countingGrant(store, key)
+			assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "old pending")
+			assert(counter.calls == 0, `an old marker must not be taken over, granted {counter.calls} times`)
+			assert(store.data[key] == old, "the other attempt's marker must be left untouched")
+		end
+	end,
+
+	["the stale-takeover window is gone"] = function()
+		assert(Monetization._PENDING_TIMEOUT == nil, "PENDING_TIMEOUT should no longer exist")
+	end,
+
+	-- Sprint-8 fix: a released marker (a refused or failed attempt) can be reserved again.
+	["a released marker is reserved again and granted once"] = function()
 		local store = newStore()
-		local r = receipt("stale")
+		local r = receipt("released")
 		local key = keyOf(r)
-		-- Sprint-7 fix: 700 s old, past PENDING_TIMEOUT (180 s), so the attempt that wrote it died mid-grant.
-		store.data[key] = { status = "pending", at = os.time() - 700 }
+		store.data[key] = { status = "released", at = os.time(), token = "old" }
 		local counter, grant = countingGrant(store, key)
-		local decision = processReceipt(r, store, grant, buyer)
-		assertDecision(decision, Decision.PurchaseGranted, "stale pending")
-		assert(counter.calls == 1, `a stale marker must grant once, granted {counter.calls} times`)
-		assert(store.data[key].status == "done", "receipt should be marked done after the takeover")
-	end,
-
-	-- Sprint-7 fix: the stale-takeover window is 180 s, so a marker a few minutes old is still busy.
-	["the stale-takeover window is 180 s"] = function()
-		assert(
-			Monetization._PENDING_TIMEOUT == 180,
-			`PENDING_TIMEOUT should be 180, got {tostring(Monetization._PENDING_TIMEOUT)}`
-		)
-	end,
-
-	-- Sprint-7 fix: the busy check moved from 200 s to 150 s, which is inside the new 180 s window.
-	["a 150 s old pending marker is still busy: NotProcessedYet and no grant"] = function()
-		local store = newStore()
-		local r = receipt("busy150")
-		local key = keyOf(r)
-		store.data[key] = { status = "pending", at = os.time() - 150, token = "other" }
-		local counter, grant = countingGrant(store, key)
-		local decision = processReceipt(r, store, grant, buyer)
-		assertDecision(decision, Decision.NotProcessedYet, "150 s old pending")
-		assert(counter.calls == 0, `a 150 s old marker must not be taken over, granted {counter.calls} times`)
-		assert(store.data[key].token == "other", "the other attempt's marker must be left untouched")
-	end,
-
-	-- Sprint-7 fix: a separate check that a 200 s old marker is past the new 180 s window, so it is taken over.
-	["a 200 s old pending marker is taken over and granted"] = function()
-		local store = newStore()
-		local r = receipt("takeover200")
-		local key = keyOf(r)
-		store.data[key] = { status = "pending", at = os.time() - 200, token = "dead" }
-		local counter, grant = countingGrant(store, key)
-		local decision = processReceipt(r, store, grant, buyer)
-		assertDecision(decision, Decision.PurchaseGranted, "200 s old pending")
-		assert(counter.calls == 1, `a 200 s old marker must grant once, granted {counter.calls} times`)
-		assert(store.data[key].status == "done", "receipt should be marked done after the takeover")
-	end,
-
-	-- Sprint-7 fix: edge moved to 180 s, with 170 s inside (busy) and 190 s past (taken over).
-	["a marker 170 s old is busy, one 190 s old is taken over"] = function()
-		local inside, past = newStore(), newStore()
-		local r = receipt("edge")
-		local key = keyOf(r)
-		inside.data[key] = { status = "pending", at = os.time() - 170, token = "other" }
-		past.data[key] = { status = "pending", at = os.time() - 190, token = "dead" }
-		local insideCounter, insideGrant = countingGrant(inside, key)
-		local pastCounter, pastGrant = countingGrant(past, key)
-		assertDecision(processReceipt(r, inside, insideGrant, buyer), Decision.NotProcessedYet, "170 s old")
-		assertDecision(processReceipt(r, past, pastGrant, buyer), Decision.PurchaseGranted, "190 s old")
-		assert(insideCounter.calls == 0, `170 s old marker granted {insideCounter.calls} times`)
-		assert(pastCounter.calls == 1, `190 s old marker should grant once, granted {pastCounter.calls} times`)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "released receipt")
+		assert(counter.calls == 1, `expected 1 grant, got {counter.calls}`)
+		assert(statusOf(store, key) == "done", "receipt should end up done")
 	end,
 
 	-- Sprint-6 fix: the grant runs synchronously, right after the reserve.
@@ -269,17 +249,68 @@ local tests = {
 		assert(counter.calls == 1, `a redelivery must not grant again, granted {counter.calls} times`)
 	end,
 
-	-- Sprint-7 fix: a yielded handler that later returns false leaves the marker pending, with no RemoveAsync.
-	["a handler that waits 0.05 s then returns false: NotProcessedYet, marker left pending"] = function()
+	-- Sprint-8 fix: a late refusal or error releases our marker (UpdateAsync, no RemoveAsync) so a retry grants.
+	["a handler that waits then returns false or errors: marker released late, retry grants once"] = function()
+		for _, result in { false, "error" } do
+			local store = newStore()
+			local r = receipt(`yielder-{tostring(result)}`)
+			local key = keyOf(r)
+			local counter, grant = lateGrant(result)
+			assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+			assert(statusOf(store, key) == "pending", "the marker must stay pending while the grant runs")
+			task.wait(0.3)
+			assert(counter.calls == 1, `expected 1 grant attempt, got {counter.calls}`)
+			assert(store.removes == 0, `the marker must be released, not removed; removes was {store.removes}`)
+			assert(statusOf(store, key) == "released", `expected released, got {tostring(statusOf(store, key))}`)
+			local retry, retryGrant = countingGrant(store, key)
+			assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.PurchaseGranted, "retry after release")
+			assert(retry.calls == 1, `the retry should grant once, granted {retry.calls} times`)
+		end
+	end,
+
+	-- Sprint-8 fix: the late done write keeps retrying (task.wait backoff) until it succeeds.
+	["a late success whose done write fails twice is still recorded"] = function()
 		local store = newStore()
-		local r = receipt("yielder-false")
+		local r = receipt("yielder-retrywrite")
 		local key = keyOf(r)
-		local counter, grant = lateGrant(false)
+		store.failCalls[2] = true
+		store.failCalls[3] = true
+		local counter, grant = lateGrant(true)
 		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		-- Retries wait RETRY_FIRST, then double it.
+		task.wait(0.05 + Monetization._RETRY_FIRST * 3 + 0.5)
+		assert(store.calls >= 4, `expected the done write to be retried, saw {store.calls} UpdateAsync calls`)
+		assert(statusOf(store, key) == "done", `expected done, got {tostring(statusOf(store, key))}`)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "redelivery")
+		assert(counter.calls == 1, `a redelivery must not grant again, granted {counter.calls} times`)
+	end,
+
+	-- Sprint-8 fix: a late failure whose release write fails is retried too, and then a retry can grant.
+	["a late failure whose release write fails once is still released"] = function()
+		local store = newStore()
+		local r = receipt("yielder-retryrelease")
+		local key = keyOf(r)
+		store.failCalls[2] = true
+		local _, grant = lateGrant(false)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		task.wait(0.05 + Monetization._RETRY_FIRST + 0.5)
+		assert(statusOf(store, key) == "released", `expected released, got {tostring(statusOf(store, key))}`)
+	end,
+
+	-- Sprint-8 fix: retries keep answering NotProcessedYet while a yielding grant runs, however many there are.
+	["many retries while a yielding grant runs: one grant in total"] = function()
+		local store = newStore()
+		local r = receipt("yielder-many")
+		local key = keyOf(r)
+		local first, firstGrant = lateGrant(true)
+		local others, otherGrant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, firstGrant, buyer), Decision.NotProcessedYet, "first attempt")
+		for i = 1, 5 do
+			assertDecision(processReceipt(r, store, otherGrant, buyer), Decision.NotProcessedYet, `retry {i}`)
+		end
 		task.wait(0.3)
-		assert(counter.calls == 1, `expected 1 grant, got {counter.calls}`)
-		assert(store.removes == 0, `a late refusal must not remove the marker, removes was {store.removes}`)
-		assert(store.data[key].status == "pending", "the marker must be left pending after a late refusal")
+		assertDecision(processReceipt(r, store, otherGrant, buyer), Decision.PurchaseGranted, "retry after done")
+		assert(first.calls == 1 and others.calls == 0, `expected 1 grant, got {first.calls + others.calls}`)
 	end,
 
 	-- Sprint-7 fix: a retry while the yielded grant is still running sees the fresh marker and grants nothing.
@@ -318,45 +349,21 @@ local tests = {
 		assert(store.data[key].token == "other", "the other attempt's marker must be left untouched")
 	end,
 
-	["a stale takeover during our grant returns NotProcessedYet, grants once, and leaves the other marker alone"] = function()
+	-- Sprint-8 fix: if our marker is replaced by hand while the grant runs, the other value is left alone; the
+	-- product was given, so it answers PurchaseGranted rather than let Roblox retry it.
+	["a marker replaced during our grant is left alone and the grant is not repeated"] = function()
 		local store = newStore()
-		local r = receipt("takeover")
+		local r = receipt("replaced")
 		local key = keyOf(r)
-		-- Our attempt reserves over this stale marker. While our grant runs, another attempt takes the receipt over.
-		store.data[key] = { status = "pending", at = os.time() - 700, token = "dead" }
 		local calls = 0
 		local function grant(_player)
 			calls += 1
-			if calls == 1 then
-				store.data[key] = { status = "pending", at = os.time(), token = "other" }
-			end
+			store.data[key] = { status = "pending", at = os.time(), token = "other" }
 			return true
 		end
-		local decision = processReceipt(r, store, grant, buyer)
-		assertDecision(decision, Decision.NotProcessedYet, "taken over during our grant")
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "replaced during grant")
 		assert(calls == 1, `expected exactly 1 grant, got {calls}`)
-		assert(store.data[key].token == "other", "the other attempt's marker must be left untouched")
-		assert(store.data[key].status == "pending", "the other attempt's marker must still be pending")
-	end,
-
-	["a redelivery after a takeover is granted with no extra grant once the other attempt marks done"] = function()
-		local store = newStore()
-		local r = receipt("takeover-redeliver")
-		local key = keyOf(r)
-		store.data[key] = { status = "pending", at = os.time() - 700, token = "dead" }
-		local calls = 0
-		local function grant(_player)
-			calls += 1
-			if calls == 1 then
-				store.data[key] = { status = "pending", at = os.time(), token = "other" }
-			end
-			return true
-		end
-		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "first attempt")
-		-- Simulates the other attempt finishing: it writes its own done marker. Its grant is not modelled here.
-		store.data[key] = { status = "done", at = os.time(), token = "other" }
-		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "redelivery")
-		assert(calls == 1, `expected 1 grant across both deliveries, got {calls}`)
+		assert(store.data[key].token == "other", "the other marker must be left untouched")
 	end,
 
 	["the stored marker during our grant carries a non-empty token string"] = function()
@@ -386,7 +393,8 @@ local tests = {
 		)
 	end,
 
-	["a grant that returns false clears the marker and returns NotProcessedYet"] = function()
+	-- Sprint-8 fix: a refused or failed grant releases its own marker (UpdateAsync, no RemoveAsync).
+	["a grant that returns false releases the marker and returns NotProcessedYet"] = function()
 		local store = newStore()
 		local r = receipt("refused")
 		local key = keyOf(r)
@@ -394,11 +402,11 @@ local tests = {
 		local decision = processReceipt(r, store, grant, buyer)
 		assertDecision(decision, Decision.NotProcessedYet, "grant returned false")
 		assert(counter.calls == 1, `expected 1 grant attempt, got {counter.calls}`)
-		assert(store.removes == 1, `expected the marker removed once, RemoveAsync ran {store.removes} times`)
-		assert(store.data[key] == nil, "the marker should be gone so Roblox's retry can grant")
+		assert(store.removes == 0, `the marker must be released, not removed; removes was {store.removes}`)
+		assert(statusOf(store, key) == "released", "the marker should be released so Roblox's retry can grant")
 	end,
 
-	["a grant that errors clears the marker and returns NotProcessedYet"] = function()
+	["a grant that errors releases the marker and returns NotProcessedYet"] = function()
 		local store = newStore()
 		local r = receipt("errored")
 		local key = keyOf(r)
@@ -406,22 +414,23 @@ local tests = {
 		local decision = processReceipt(r, store, grant, buyer)
 		assertDecision(decision, Decision.NotProcessedYet, "grant errored")
 		assert(counter.calls == 1, `expected 1 grant attempt, got {counter.calls}`)
-		assert(store.removes == 1, `expected the marker removed once, RemoveAsync ran {store.removes} times`)
-		assert(store.data[key] == nil, "the marker should be gone so Roblox's retry can grant")
+		assert(statusOf(store, key) == "released", "the marker should be released so Roblox's retry can grant")
 	end,
 
-	["a failed RemoveAsync after a refused grant still returns NotProcessedYet"] = function()
+	["a failed release after a refused grant returns NotProcessedYet and is retried"] = function()
 		local store = newStore()
-		local r = receipt("removefail")
+		local r = receipt("releasefail")
 		local key = keyOf(r)
-		store.failRemove = true
+		store.failCalls[2] = true -- the release UpdateAsync throws once
 		local _, grant = countingGrant(store, key, "false")
 		local ok, decision = pcall(processReceipt, r, store, grant, buyer)
-		assert(ok, `processReceipt must not throw when RemoveAsync fails: {tostring(decision)}`)
-		assertDecision(decision, Decision.NotProcessedYet, "remove failed")
+		assert(ok, `processReceipt must not throw when the release fails: {tostring(decision)}`)
+		assertDecision(decision, Decision.NotProcessedYet, "release failed")
+		task.wait(0.2)
+		assert(statusOf(store, key) == "released", `expected released, got {tostring(statusOf(store, key))}`)
 	end,
 
-	["a failed mark-done still returns PurchaseGranted and grants once"] = function()
+	["a failed mark-done still returns PurchaseGranted, grants once, and is recorded by a retry"] = function()
 		local store = newStore()
 		local r = receipt("markfail")
 		local key = keyOf(r)
@@ -430,7 +439,8 @@ local tests = {
 		local decision = processReceipt(r, store, grant, buyer)
 		assertDecision(decision, Decision.PurchaseGranted, "mark-done failed after a grant")
 		assert(counter.calls == 1, `expected exactly 1 grant, got {counter.calls}`)
-		assert(store.removes == 0, "a granted purchase must not have its marker removed")
+		task.wait(0.2)
+		assert(statusOf(store, key) == "done", `expected done, got {tostring(statusOf(store, key))}`)
 	end,
 
 	["a redelivered receipt after a successful grant is not granted again"] = function()
@@ -453,6 +463,85 @@ local tests = {
 		assert(ok, `processReceipt must not throw when the reserve fails: {tostring(decision)}`)
 		assertDecision(decision, Decision.NotProcessedYet, "reserve failed")
 		assert(counter.calls == 0, `nothing may be granted when the reserve fails, granted {counter.calls} times`)
+	end,
+
+	-- Sprint-8 fix: a reserve that writes its marker and then throws leaves it behind. The background release
+	-- replaces it with "released", so a retry can grant.
+	["a reserve that writes then throws is released in the background; a retry grants once"] = function()
+		local store = newStore()
+		local r = receipt("reserve-landed")
+		local key = keyOf(r)
+		local realUpdate = store.UpdateAsync
+		function store:UpdateAsync(k, transform)
+			local isReserve = self.calls == 0
+			local result = realUpdate(self, k, transform)
+			if isReserve then
+				error("simulated reserve failure after the write landed")
+			end
+			return result
+		end
+		local counter, grant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "reserve threw")
+		assert(counter.calls == 0, `nothing may be granted when the reserve throws, granted {counter.calls} times`)
+		task.wait(0.1)
+		assert(statusOf(store, key) == "released", `expected released, got {tostring(statusOf(store, key))}`)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "retry")
+		assert(counter.calls == 1, `expected 1 grant, got {counter.calls}`)
+	end,
+
+	-- Sprint-8 fix: a mark-done that writes and then throws is written again over the same token. Nothing is
+	-- granted twice.
+	["a mark-done that writes then throws is written again, and a redelivery grants nothing"] = function()
+		local store = newStore()
+		local r = receipt("done-landed")
+		local key = keyOf(r)
+		local realUpdate = store.UpdateAsync
+		function store:UpdateAsync(k, transform)
+			local result = realUpdate(self, k, transform)
+			if self.calls == 2 then
+				error("simulated mark-done failure after the write landed")
+			end
+			return result
+		end
+		local counter, grant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "mark-done threw")
+		assert(counter.calls == 1, `expected exactly 1 grant, got {counter.calls}`)
+		task.wait(0.1)
+		assert(statusOf(store, key) == "done", `expected done, got {tostring(statusOf(store, key))}`)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "redelivery")
+		assert(counter.calls == 1, `a redelivery must not grant again, granted {counter.calls} times`)
+	end,
+
+	-- A handler that returns nothing has not said it gave the product, so it counts as a refusal.
+	["a handler that returns nothing is treated as refused and released"] = function()
+		local store = newStore()
+		local r = receipt("nothing")
+		local key = keyOf(r)
+		local calls = 0
+		local function grant(_player)
+			calls += 1
+		end
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "no return value")
+		assert(calls == 1, `expected 1 grant attempt, got {calls}`)
+		assert(statusOf(store, key) == "released", `expected released, got {tostring(statusOf(store, key))}`)
+		local retry, retryGrant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.PurchaseGranted, "retry")
+		assert(retry.calls == 1, `the retry should grant once, granted {retry.calls} times`)
+	end,
+
+	-- Sprint-8 fix: a late result is written only over our own marker. If another attempt's marker has replaced
+	-- ours, the late result leaves it alone.
+	["a late result never overwrites another attempt's marker"] = function()
+		local store = newStore()
+		local r = receipt("late-clobber")
+		local key = keyOf(r)
+		local counter, grant = lateGrant(true)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		store.data[key] = { status = "pending", at = os.time(), token = "other" }
+		task.wait(0.3)
+		assert(counter.calls == 1, `expected 1 grant, got {counter.calls}`)
+		assert(store.data[key].token == "other", "the other attempt's marker must be left untouched")
+		assert(store.data[key].status == "pending", "the other attempt's marker must not be changed")
 	end,
 }
 
