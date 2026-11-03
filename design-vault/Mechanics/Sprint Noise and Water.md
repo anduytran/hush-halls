@@ -1,5 +1,5 @@
 ---
-status: in-progress   # built in sprint 1, not playtested
+status: in-progress   # InRound-only noise/drowning in sprint 2, not playtested
 tags: [design, mechanic]
 ---
 # Sprint, noise and water
