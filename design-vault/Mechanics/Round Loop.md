@@ -1,5 +1,5 @@
 ---
-status: in-progress   # wired end to end in sprint 2; reviewer fixes in sprints 3–7 (start retries, stop() guard, failed-start teardown, no restarts, per-step start errors, all setup inside the step pcalls); sprint 20 full-round smoke spec passes in a Studio play-test, not played in a live round
+status: in-progress   # wired end to end in sprint 2; reviewer fixes in sprints 3–7 (start retries, stop() guard, failed-start teardown, no restarts, per-step start errors, all setup inside the step pcalls); sprint 20 full-round smoke spec passes in a Studio play-test; sprint 21 two-player and mid-round joiner specs pass with fake players (19/19), not played in a live round
 tags: [design, mechanic]
 ---
 # Round loop

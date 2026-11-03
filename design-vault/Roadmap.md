@@ -111,8 +111,12 @@ Sprint 20 (2026-11-03): end-to-end round smoke spec with timing hook (merged; 17
 - [x] Studio-only `RoundService._test.setDurations` shortens Lobby/Running/Ended for specs; live lengths unchanged.
 - [x] Smoke spec runs a whole round: Lobby → Running → Ended → Lobby, escape, InRound and Escaped clearing.
 
+Sprint 21 (2026-11-03): two-player round spec with a mid-round joiner (merged; 19 of 19 RoundService tests pass in a one-player Studio play-test using Studio-only fake players, not played in a live round).
+- [x] Studio-only fake players (`RoundService._test.addFakePlayer`, `touchExit`, `removeFakePlayers`); RoundService reads players through `getPlayers()` so the loop treats fakes like real ones. Monster and NoiseService don't see fakes.
+- [x] Specs: two players run a round together, and a player joining mid-round waits as a spectator. Any RoundService warning during a test fails it.
+
 ## Needs a playtest
-- Full round in a live multi-player server (sprint 20 smoke spec passed in Studio with one player only): join mid-round, spectators, escape pays once.
+- Full round in a live multi-player server (sprints 20–21 specs passed in Studio with one real player; sprint 21 used fake players, which Monster and NoiseService ignore): join mid-round, spectators, escape pays once.
 - HUD goal line (sprints 17–19): Shift still sprints after respawn; text follows round state and `Escaped` in a live round; check on a real phone and desktop (simulated 375x667 layout passes; screens under ~370 px would touch the Coins column).
 - Monster hearing band (sprint 16): a player at 12–14 studs/s is heard but chased after sprinters; `Monster._test` absent on a live server.
 - Walking is silent (sprint 15): a walker at 10 studs/s is never chased, a sprinter is; check the monster still feels threatening when everyone walks.

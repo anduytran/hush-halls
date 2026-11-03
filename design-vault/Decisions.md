@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 21: fake players for multi-player specs
+- **Multi-player round specs use Studio-only fake players inside RoundService** (`_test.addFakePlayer`), since a Studio play-test has one real player. RoundService reads players through one `getPlayers()` helper so fakes go through the real loop. Alternative considered: Studio's multi-client test server; rejected as it can't run unattended. Known gap: Monster and NoiseService don't see fakes, so a real multi-player playtest is still needed.
+
 ## 2026-11-03 — Sprint 20: round smoke test timing
 - **Phase lengths can be shortened only from Studio specs** (`RoundService._test.setDurations`, min 0.5 s, errors outside Studio), so a full round can be tested in seconds without touching live numbers. Alternative considered: a shorter-round config flag; rejected because it could leak into a live server.
 
