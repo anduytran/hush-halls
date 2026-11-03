@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 17: HUD goal line
+- **The goal is shown as a line under the round timer** (child of RoundInfo) so new players know to reach the EXIT and that sprinting is loud, without moving other HUD elements. Alternative considered: a one-time tutorial popup; rejected as it's easy to miss and adds a screen.
+
 ## 2026-11-03 — Sprint 16: hearing follow-ups
 - **Monster test hooks are Studio-only** (`Monster._test`), like RoundService, replacing sprint 15's public `Monster.isHeard`.
 - **Kept the 12–14 studs/s band on purpose**: heard, but ranked like a walker so the monster drifts toward you instead of chasing first.

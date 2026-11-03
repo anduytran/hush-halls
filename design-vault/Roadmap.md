@@ -96,7 +96,11 @@ Sprint 16 (2026-11-03): monster hearing reviewer follow-ups (merged; spec ran in
 - [x] `Monster.isHeard` removed from the public API; test hooks moved to a Studio-only `Monster._test` (isHeard, HEARD_SPEED, SPRINT_SPEED).
 - [x] Comments explain the 12–14 studs/s band: heard, but treated like a walker, not a sprinter. New spec covers it.
 
+Sprint 17 (2026-11-03): HUD goal line (merged; client spec `Hud.cloud.spec.luau` added, not run in Studio).
+- [x] `RoundInfo.GoalText` under the timer: "Reach the EXIT. Sprinting is loud." while running, an escaped message after escaping, "Round over." at the end, and a pre-round hint otherwise.
+
 ## Needs a playtest
+- HUD goal line (sprint 17): text follows round state and `Escaped`, wraps cleanly and doesn't overlap other HUD panels on phone and desktop.
 - Monster hearing band (sprint 16): a player at 12–14 studs/s is heard but chased after sprinters; `Monster._test` absent on a live server.
 - Walking is silent (sprint 15): a walker at 10 studs/s is never chased, a sprinter is; check the monster still feels threatening when everyone walks.
 - VIP escape pays 20 coins, non-VIP 10 (sprint 14; needs a VIP pass ID to test the real grant).
