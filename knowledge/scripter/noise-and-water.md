@@ -8,5 +8,6 @@
 - The loop function is `step` (not `tick`, which shadows the Roblox global).
 
 # Server startup (main.server.luau)
-- Requires the systems up front; HallBuilder is required and built inside one pcall. Each start() then runs in its own task.spawn + pcall, so one that fails or waits can't hold up the others or the Monetization handlers.
-- Monetization opens its DataStore lazily, so requiring it in an unpublished Studio place is safe. ProcessReceipt checks, grants and records inside one UpdateAsync on `{PlayerId}_{PurchaseId}`, so product handlers must not yield. A local `granted` flag stops a rerun of the callback granting twice. If the write fails after a grant it still returns PurchaseGranted.
+- HallBuilder is required *inside* the pcall that builds the hall, so a HallBuilder that errors on require only warns and Monetization handlers still get set up.
+- NoiseService.start, Monster.start and RoundService.start each run in their own thread (`task.spawn(tryStart, ...)` + pcall), so one that errors or yields (Monster waits for `Workspace.Hall`) can't block the others or the purchase handlers below. A start() that errors is retried every 5 s, up to 5 times; one that succeeded is recorded in `startedSystems` and never started again.
+- Monetization opens its DataStore lazily, so requiring it in an unpublished Studio place is safe. Receipt handling is in monetization-receipts.md.
