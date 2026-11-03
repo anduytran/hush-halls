@@ -2,8 +2,8 @@
 -- Server-measured horizontal speed of players, shared by Monster and NoiseService.
 -- Speed is the average of position deltas over the last WINDOW seconds, so one uneven network
 -- update can't make a walker look like a sprinter. Samples closer together than MIN_SAMPLE are
--- skipped. Sprint-4 fix: a single step longer than MAX_STEP studs (a teleport or a lag spike) is no
--- longer ignored; that step counts as at most SPRINT_SPEED, so it adds noise but can't read faster than a sprint.
+-- skipped. Sprint-5 fix: a single step longer than MAX_STEP studs (a teleport or a lag spike) resets the
+-- player's entry at the new position: the old deltas are dropped and the reading is 0, as after a respawn.
 -- Only .X and .Z of positions are read and no engine API is used, so it can be tested without Roblox.
 
 local SpeedSampler = {}
@@ -48,8 +48,10 @@ function SpeedSampler.new(): Sampler
 			local dx, dz = position.X - entry.x, position.Z - entry.z
 			local distance = math.sqrt(dx * dx + dz * dz)
 			if distance > SpeedSampler.MAX_STEP then
-				-- min: a long step over a long gap (a walker after a stall) keeps its real, slower speed.
-				distance = math.min(distance, SpeedSampler.SPRINT_SPEED * dt)
+				-- Sprint-5 fix: a teleport or lag spike isn't movement. Restart from here: deltas cleared, speed 0.
+				entry.x, entry.z, entry.time = position.X, position.Z, now
+				table.clear(entry.deltas)
+				return 0
 			end
 			table.insert(entry.deltas, { time = now, distance = distance, dt = dt })
 			entry.x, entry.z, entry.time = position.X, position.Z, now

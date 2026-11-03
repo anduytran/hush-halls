@@ -38,12 +38,12 @@ end
 local tests = {
 	["a player joining while the round is spawning lands on the platform"] = function()
 		task.wait(0.5) -- start() waits for Hall.Start/Exit before the platform exists
-		local platform = RoundService._platform()
+		local platform = RoundService._test.platform()
 		assert(platform, "start() should have made Hall.LobbyPlatform")
 		local player, character, cleanup = fakeJoiner()
-		RoundService._setSpawning(true)
-		local ok, err = pcall(RoundService._placeSpectator, player, character)
-		RoundService._setSpawning(false)
+		RoundService._test.setSpawning(true)
+		local ok, err = pcall(RoundService._test.placeSpectator, player, character)
+		RoundService._test.setSpawning(false)
 		local position = character:GetPivot().Position
 		cleanup()
 		assert(ok, "placeSpectator errored: " .. tostring(err))
@@ -58,7 +58,7 @@ local tests = {
 	["a player joining in Lobby (not spawning) stays where they spawned"] = function()
 		task.wait(0.5)
 		local player, character, cleanup = fakeJoiner()
-		RoundService._placeSpectator(player, character)
+		RoundService._test.placeSpectator(player, character)
 		local position = character:GetPivot().Position
 		cleanup()
 		assert((position - Vector3.new(0, 500, 0)).Magnitude < 0.01, "a Lobby joiner must not be moved")
@@ -110,11 +110,30 @@ local tests = {
 		assert(state:GetAttribute("TimeLeft") == -1, "stop() when not started changed state")
 	end,
 
-	["stop() ends the loop: state is no longer updated"] = function()
+	-- Sprint-5 fix: this used to set State.TimeLeft to -1 and check nothing wrote it. That failed because the
+	-- spec's RoundService can be a separate module instance from main.server's, whose loop keeps writing the
+	-- shared State folder. So it checks this instance's own loop thread instead.
+	["stop() ends the loop: its thread is cancelled and cleared"] = function()
+		local thread = RoundService._test.loop()
+		assert(thread, "start() should have started the loop")
 		RoundService.stop()
-		state:SetAttribute("TimeLeft", -1)
+		assert(RoundService._test.loop() == nil, "stop() should clear the loop")
 		task.wait(1.5)
-		assert(state:GetAttribute("TimeLeft") == -1, "expected the stopped loop to leave TimeLeft alone")
+		assert(
+			coroutine.status(thread) == "dead",
+			"expected the stopped loop to be dead, was " .. coroutine.status(thread)
+		)
+	end,
+
+	["stop() clears the platform and start() finds it again"] = function()
+		task.wait(0.5)
+		local before = RoundService._test.platform()
+		assert(before, "start() should have made Hall.LobbyPlatform")
+		RoundService.stop()
+		assert(RoundService._test.platform() == nil, "stop() should reset platform to nil")
+		RoundService.start()
+		task.wait(0.5)
+		assert(RoundService._test.platform() == before, "start() should reuse the existing Hall.LobbyPlatform")
 	end,
 }
 

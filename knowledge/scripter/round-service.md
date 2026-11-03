@@ -6,7 +6,7 @@
 - Player attribute `InRound`: true from the round spawn until death, escape or Ended. Monster and NoiseService ignore players without it. Spectators (late joiners, dead players who respawned) are moved to the platform during Running, and during the spawn wait (`spawning` flag; RoundState is still Lobby then), plus a sweep of non-participants when Running begins.
 - A `round` counter guards Died handlers, so a character from an earlier round can't mark someone dead.
 - Escape: Exit.Touched sets Escaped=true before coins are added, so the reward can't be paid twice.
-- `stop()` is test-only and does nothing unless started. Test hooks: `_setSpawning`, `_placeSpectator(player, character)`, `_platform()`. The spec passes a plain `{ Character = model }` table as the player (a non-participant only has `.Character` read).
-- main.server retries any system's `start()` that errors: every 5 s, up to 5 retries.
-- Gotcha: a spec run via Studio execute_luau can get its own module instance (separate require cache), so its `stop()` can't stop main.server's loop.
+- `stop()` is test-only and does nothing unless started. It and a failed start() share a local `teardown()`, which also sets `platform` to nil. Test hooks are all in `RoundService._test`: `setSpawning`, `placeSpectator(player, character)`, `platform()`, `loop()`. The spec passes a plain `{ Character = model }` table as the player (a non-participant only has `.Character` read).
+- main.server retries any system's `start()` that errors: every 5 s, up to 5 retries. A system that started is put in `startedSystems` and is never started again.
+- Gotcha: a spec can get its own module instance (separate require cache), so its `stop()` can't stop main.server's loop, and main's loop keeps writing the shared `State` attributes. Specs should check this instance's own state (e.g. `_test.loop()` being dead), not whether State stopped changing.
 - Owns `leaderstats.Coins` (created on PlayerAdded). Other systems should add to it, not recreate it.

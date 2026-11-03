@@ -6,6 +6,7 @@
 -- so a purchase Roblox retries is never given twice. The handler runs outside UpdateAsync and may yield.
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
+local HttpService = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local Products = require(game:GetService("ReplicatedStorage").Shared.Products)
@@ -129,15 +130,23 @@ local function isFreshPending(value: any, now: number): boolean
 		and now - value.at < PENDING_TIMEOUT
 end
 
+local function isOurs(value: any, token: string): boolean
+	return type(value) == "table" and value.token == token
+end
+
 -- Sprint-4 fix: UpdateAsync only reserves the receipt key with a "pending" marker. The grant runs after it
 -- returns (so a retried UpdateAsync callback can never grant twice), then a second UpdateAsync marks it done.
 -- A failed grant removes the marker so Roblox's retry can try again.
+-- Sprint-5 fix: each attempt writes its marker with its own unique token, and only grants if the stored value
+-- after the reserve is that marker. Marking done only replaces our own marker: if another attempt took the
+-- receipt over meanwhile (ours went stale), its marker is left alone and we return NotProcessedYet.
 local function processReceipt(receipt: Receipt, store: DataStore, grant: ProductHandler, buyer: Player)
 	local receiptKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
 	local now = os.time()
+	local token = HttpService:GenerateGUID(false)
 	local status: "done" | "busy" | "reserved" = "busy"
-	local reserveOk, reserveErr = pcall(function()
-		store:UpdateAsync(receiptKey, function(value)
+	local reserveOk, reserveResult = pcall(function()
+		return store:UpdateAsync(receiptKey, function(value)
 			-- May run more than once: it only sets `status` and returns the marker, nothing else.
 			if isDone(value) then
 				status = "done"
@@ -148,17 +157,18 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 				return nil
 			end
 			status = "reserved"
-			return { status = "pending", at = now }
+			return { status = "pending", at = now, token = token }
 		end)
 	end)
 	if not reserveOk then
-		warn(`[Monetization] couldn't reserve purchase {receipt.PurchaseId}: {reserveErr}`)
+		warn(`[Monetization] couldn't reserve purchase {receipt.PurchaseId}: {reserveResult}`)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 	if status == "done" then
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
-	if status == "busy" then
+	-- Sprint-5 fix: grant only once the store holds our token, not just because our callback said "reserved".
+	if status == "busy" or not isOurs(reserveResult, token) then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
@@ -177,14 +187,26 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
+	-- Sprint-5 fix: only our own marker is replaced with "done".
+	local marked = false
 	local doneOk, doneErr = pcall(function()
-		store:UpdateAsync(receiptKey, function()
-			return { status = "done", at = now }
+		store:UpdateAsync(receiptKey, function(value)
+			marked = isOurs(value, token)
+			if not marked then
+				return nil -- another attempt took it over: leave its marker for it to finish
+			end
+			return { status = "done", at = now, token = token }
 		end)
 	end)
 	if not doneOk then
 		-- It was given, so tell Roblox it's done rather than risk giving it again on retry.
 		warn(`[Monetization] granted purchase {receipt.PurchaseId} but couldn't record it: {doneErr}`)
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+	if not marked then
+		-- The attempt that took over records the receipt; Roblox's retry then sees it done and grants nothing more.
+		warn(`[Monetization] purchase {receipt.PurchaseId} was taken over by another attempt while granting`)
+		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end

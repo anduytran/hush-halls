@@ -25,9 +25,16 @@ local systems: { { name: string, start: () -> () } } = {
 	{ name = "Monster", start = Monster.start },
 	{ name = "RoundService", start = RoundService.start },
 }
+-- Sprint-5 fix: a system that has started once is never started again, and each start() also returns early
+-- if it's already running (a failed RoundService.start() undoes its connections before erroring).
+local startedSystems: { [string]: boolean } = {}
 local function tryStart(system: { name: string, start: () -> () }, attempt: number)
+	if startedSystems[system.name] then
+		return
+	end
 	local ok, err = pcall(system.start)
 	if ok then
+		startedSystems[system.name] = true
 		return
 	end
 	if attempt > START_RETRIES then

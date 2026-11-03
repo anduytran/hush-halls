@@ -173,6 +173,62 @@ local tests = {
 		assert(store.data[key].status == "done", "receipt should be marked done after the takeover")
 	end,
 
+	["a stale takeover during our grant returns NotProcessedYet, grants once, and leaves the other marker alone"] = function()
+		local store = newStore()
+		local r = receipt("takeover")
+		local key = keyOf(r)
+		-- Our attempt reserves over this stale marker. While our grant runs, another attempt takes the receipt over.
+		store.data[key] = { status = "pending", at = os.time() - 200, token = "dead" }
+		local calls = 0
+		local function grant(_player)
+			calls += 1
+			if calls == 1 then
+				store.data[key] = { status = "pending", at = os.time(), token = "other" }
+			end
+			return true
+		end
+		local decision = processReceipt(r, store, grant, buyer)
+		assertDecision(decision, Decision.NotProcessedYet, "taken over during our grant")
+		assert(calls == 1, `expected exactly 1 grant, got {calls}`)
+		assert(store.data[key].token == "other", "the other attempt's marker must be left untouched")
+		assert(store.data[key].status == "pending", "the other attempt's marker must still be pending")
+	end,
+
+	["a redelivery after a takeover is granted with no extra grant once the other attempt marks done"] = function()
+		local store = newStore()
+		local r = receipt("takeover-redeliver")
+		local key = keyOf(r)
+		store.data[key] = { status = "pending", at = os.time() - 200, token = "dead" }
+		local calls = 0
+		local function grant(_player)
+			calls += 1
+			if calls == 1 then
+				store.data[key] = { status = "pending", at = os.time(), token = "other" }
+			end
+			return true
+		end
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "first attempt")
+		-- Simulates the other attempt finishing: it writes its own done marker. Its grant is not modelled here.
+		store.data[key] = { status = "done", at = os.time(), token = "other" }
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "redelivery")
+		assert(calls == 1, `expected 1 grant across both deliveries, got {calls}`)
+	end,
+
+	["the stored marker during our grant carries a non-empty token string"] = function()
+		local store = newStore()
+		local r = receipt("tokencheck")
+		local key = keyOf(r)
+		local seen = nil
+		local function grant(_player)
+			local held = store.data[key]
+			seen = if type(held) == "table" then held.token else nil
+			return true
+		end
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "token check")
+		assert(type(seen) == "string", `expected a string token during the grant, got {tostring(seen)}`)
+		assert(#seen > 0, "the token must not be empty")
+	end,
+
 	["the receipt is reserved as pending before the handler runs"] = function()
 		local store = newStore()
 		local r = receipt("reserved")

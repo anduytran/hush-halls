@@ -164,7 +164,9 @@ local tests = {
 		end
 	end,
 
-	["a single teleport counts as sprint speed and the sprinter stays near 24"] = function()
+	-- Sprint-5 fix: a step over MAX_STEP now resets the entry (deltas cleared, speed 0) instead of counting
+	-- as sprint speed. The tests below check the reset.
+	["a teleport resets the sprinter to 0, then the next steps read near 24 again"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
 		-- Sprint 0 to 1.0 s, teleport 100 studs at 1.1 s, then keep sprinting from the new spot.
@@ -174,9 +176,14 @@ local tests = {
 			table.insert(track, { time = 1.1 + i * 0.1, x = 24 * 1.1 + 100 + 24 * i * 0.1 })
 		end
 		local speeds = feed(sampler, player, root, track)
-		-- The teleport sample is index 12; unclamped it would read far above 24, and dropped it would leave a gap.
-		for i = 2, #speeds do
-			assertNear(speeds[i], 24, `sprinter across a teleport, sample {i}`)
+		-- The teleport sample is index 12.
+		for i = 2, 11 do
+			assertNear(speeds[i], 24, `sprinter before the teleport, sample {i}`)
+		end
+		assert(speeds[12] == 0, `the teleport sample must reset to 0, read {speeds[12]}`)
+		-- Measured from the new spot only: unreset, the old deltas or the 100-stud jump would show here.
+		for i = 13, #speeds do
+			assertNear(speeds[i], 24, `sprinter after the teleport, sample {i}`)
 		end
 	end,
 
@@ -189,47 +196,47 @@ local tests = {
 		assertNear(kept, 400, "a 40-stud step", 0.5)
 	end,
 
-	["a step just over MAX_STEP counts as sprint speed"] = function()
+	["a step just over MAX_STEP resets the reading to 0"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
 		sampler.update(player, root, { X = 0, Z = 0 }, 0)
-		local loud = sampler.update(player, root, { X = 40.5, Z = 0 }, 0.1)
-		assertNear(loud, SpeedSampler.SPRINT_SPEED, "a 40.5-stud step")
-		assertNear(sampler.speed(player), SpeedSampler.SPRINT_SPEED, "speed() after a long step")
+		local reset = sampler.update(player, root, { X = 40.5, Z = 0 }, 0.1)
+		assert(reset == 0, `a 40.5-stud step must reset to 0, read {reset}`)
+		assertNear(sampler.speed(player), 0, "speed() after a long step")
 	end,
 
-	["a standing player who teleports is heard as sprinting for that step"] = function()
+	["a walker who teleports reads 0 and their old deltas are gone"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
-		-- Stands still 0 to 1.0 s, then jumps 500 studs at 1.1 s.
-		local track = straight(0, every(0.1, 10))
-		table.insert(track, { time = 1.1, x = 500 })
+		-- Walks at 10 studs/s from 0 to 1.0 s, then jumps 500 studs at 1.1 s.
+		local track = straight(10, every(0.1, 10))
+		table.insert(track, { time = 1.1, x = 510 })
 		local speeds = feed(sampler, player, root, track)
-		-- Window at 1.1 s: four stationary 0.1 s deltas plus the 0.1 s jump at 24 => 2.4 studs over 0.5 s, about 4.8.
-		-- The point: it is not 0 (ignored) and not 5000 (raw).
-		assert(speeds[12] > 0, `a teleport must make noise, read {speeds[12]}`)
-		assert(
-			speeds[12] <= SpeedSampler.SPRINT_SPEED + TOLERANCE,
-			`a teleport must not read above sprint speed, read {speeds[12]}`
-		)
+		assertNear(speeds[11], 10, "walker before the teleport")
+		assert(speeds[12] == 0, `a teleport must reset to 0, read {speeds[12]}`)
+		-- Standing still at the new spot: still 0, so none of the walk's deltas survived the reset.
+		-- (1.3 rather than 1.2: 1.2 - 1.1 is just under MIN_SAMPLE in floats and would be skipped.)
+		local still = sampler.update(player, root, { X = 510, Z = 0 }, 1.3)
+		assertNear(still, 0, "standing after the teleport")
 	end,
 
-	["a long step over a long gap still reads as sprint speed, not more"] = function()
+	["after a reset the next step is measured from the new position"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
 		sampler.update(player, root, { X = 0, Z = 0 }, 0)
-		-- 300 studs in 0.4 s would be 750 studs/s raw.
-		local speed = sampler.update(player, root, { X = 300, Z = 0 }, 0.4)
-		assertNear(speed, SpeedSampler.SPRINT_SPEED, "a long step over 0.4 s")
+		-- 300 studs in 0.4 s: a teleport. Raw it would be 750 studs/s.
+		assert(sampler.update(player, root, { X = 300, Z = 0 }, 0.4) == 0, "a long step must reset to 0")
+		-- 2 studs in 0.2 s from X = 300: 10 studs/s. Measured from X = 0 it would be far above that.
+		assertNear(sampler.update(player, root, { X = 302, Z = 0 }, 0.6), 10, "first step after the reset")
 	end,
 
-	["a walker's long step after a long stall keeps its real speed"] = function()
+	["a long step after a long stall also resets"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
 		sampler.update(player, root, { X = 0, Z = 0 }, 0)
-		-- 50 studs in 5 s is 10 studs/s: over MAX_STEP, but slower than a sprint, so it isn't raised to 24.
+		-- 50 studs in 5 s is over MAX_STEP, so it resets like any other long step.
 		local speed = sampler.update(player, root, { X = 50, Z = 0 }, 5)
-		assertNear(speed, 10, "a walker after a 5 s stall")
+		assert(speed == 0, `a 50-stud step after a stall must reset to 0, read {speed}`)
 	end,
 
 	["a diagonal step is measured horizontally"] = function()
