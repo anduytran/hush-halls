@@ -1,9 +1,10 @@
 --!strict
 -- Sprint, noise and rising water.
 -- Players walk (sneak) at 10 by default and sprint at 24 while the Sprint remote says so.
--- Every tick the loudest player's horizontal speed becomes State.Noise (0-1); while the
--- round is Running, the water rises by Noise * RISE_PER_SECOND. Anyone whose
--- HumanoidRootPart stays under the water for DROWN_TIME dies.
+-- Every step the loudest InRound player's horizontal speed (measured on the server from position
+-- changes) becomes State.Noise (0-1); while the round is Running, the water rises by
+-- Noise * RISE_PER_SECOND. An InRound player whose HumanoidRootPart stays under the water, inside
+-- its XZ footprint, for DROWN_TIME dies. The water drains when a round starts and in the lobby.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -18,6 +19,7 @@ local IDLE_SPEED = 0.5 -- below this horizontal speed counts as silent
 local SNEAK_NOISE = 0.1 -- noise at full walk speed
 local SPRINT_RATE_LIMIT = 10 -- Sprint events per second per player
 local DEFAULT_FLOOR_SIZE = Vector3.new(200, 1, 200)
+local MAX_PLAUSIBLE_SPEED = 60 -- faster than this between steps is a teleport, not footsteps
 
 local NoiseService = {}
 
@@ -27,6 +29,7 @@ local started = false
 local sprinting: { [Player]: boolean } = {}
 local sprintBudget: { [Player]: { tokens: number, last: number } } = {}
 local underwaterSince: { [Player]: number } = {}
+local lastPosition: { [Player]: { root: BasePart, position: Vector3 } } = {}
 
 local function allowSprintEvent(player: Player): boolean
 	local now = os.clock()
@@ -45,6 +48,9 @@ local function allowSprintEvent(player: Player): boolean
 end
 
 local function getHumanoid(player: Player): (Humanoid?, BasePart?)
+	if player:GetAttribute("InRound") ~= true then
+		return nil, nil
+	end
 	local character = player.Character
 	if not character then
 		return nil, nil
@@ -58,7 +64,8 @@ local function getHumanoid(player: Player): (Humanoid?, BasePart?)
 end
 
 local function applySpeed(player: Player)
-	local humanoid = getHumanoid(player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if humanoid and humanoid.Health > 0 then
 		humanoid.WalkSpeed = if sprinting[player] then SPRINT_SPEED else WALK_SPEED
 	end
@@ -107,6 +114,27 @@ local function waterTop(): number
 	return base + (State:GetAttribute("WaterLevel") :: number? or 0)
 end
 
+-- True when the position is over the water, which covers Hall.Floor (or the default footprint).
+local function insideFootprint(position: Vector3): boolean
+	local floor = getFloor()
+	local size = if floor then floor.Size else DEFAULT_FLOOR_SIZE
+	local center = if floor then floor.Position else Vector3.zero
+	return math.abs(position.X - center.X) <= size.X / 2 and math.abs(position.Z - center.Z) <= size.Z / 2
+end
+
+-- Horizontal speed since the last step, from where the server sees the character.
+local function measureSpeed(player: Player, root: BasePart, dt: number): number
+	local position = root.Position
+	local previous = lastPosition[player]
+	lastPosition[player] = { root = root, position = position }
+	if not previous or previous.root ~= root or dt <= 0 then
+		return 0
+	end
+	local delta = position - previous.position
+	local speed = Vector2.new(delta.X, delta.Z).Magnitude / dt
+	return if speed > MAX_PLAUSIBLE_SPEED then 0 else speed
+end
+
 local function updateWater(water: Part)
 	local floor = getFloor()
 	local level = State:GetAttribute("WaterLevel") :: number? or 0
@@ -124,15 +152,15 @@ local function updateWater(water: Part)
 	water.CFrame = CFrame.new(center.X, base + level / 2, center.Z)
 end
 
-local function tick(water: Part, dt: number)
+local function step(water: Part, dt: number)
 	local now = os.clock()
 	local loudest = 0
 	for _, player in Players:GetPlayers() do
 		local humanoid, root = getHumanoid(player)
 		if humanoid and root and humanoid.Health > 0 then
-			local velocity = root.AssemblyLinearVelocity
-			local speed = Vector2.new(velocity.X, velocity.Z).Magnitude
-			loudest = math.max(loudest, noiseFromSpeed(speed))
+			loudest = math.max(loudest, noiseFromSpeed(measureSpeed(player, root, dt)))
+		else
+			lastPosition[player] = nil
 		end
 	end
 	State:SetAttribute("Noise", loudest)
@@ -147,7 +175,8 @@ local function tick(water: Part, dt: number)
 	local level = State:GetAttribute("WaterLevel") :: number? or 0
 	for _, player in Players:GetPlayers() do
 		local humanoid, root = getHumanoid(player)
-		if humanoid and root and humanoid.Health > 0 and level > 0 and root.Position.Y < top then
+		local submerged = root ~= nil and root.Position.Y < top and insideFootprint(root.Position)
+		if humanoid and humanoid.Health > 0 and level > 0 and submerged then
 			local since = underwaterSince[player]
 			if not since then
 				underwaterSince[player] = now
@@ -201,11 +230,14 @@ function NoiseService.start()
 		sprinting[player] = nil
 		sprintBudget[player] = nil
 		underwaterSince[player] = nil
+		lastPosition[player] = nil
 	end)
 
 	State:GetAttributeChangedSignal("RoundState"):Connect(function()
-		if State:GetAttribute("RoundState") == "Running" then
+		local roundState = State:GetAttribute("RoundState")
+		if roundState == "Running" or roundState == "Lobby" then
 			State:SetAttribute("WaterLevel", 0)
+			table.clear(underwaterSince)
 		end
 	end)
 
@@ -217,7 +249,7 @@ function NoiseService.start()
 		while true do
 			task.wait(TICK)
 			local now = os.clock()
-			tick(water, now - last)
+			step(water, now - last)
 			last = now
 		end
 	end)

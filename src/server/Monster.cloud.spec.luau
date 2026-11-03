@@ -69,6 +69,19 @@ return {
 		state:SetAttribute("RoundState", "Lobby")
 	end,
 
+	["CanTouch is off outside Running and on while Running"] = function()
+		state:SetAttribute("RoundState", "Lobby")
+		task.wait(0.2)
+		assert(monsterBody().CanTouch == false, "expected CanTouch false in Lobby")
+		state:SetAttribute("RoundState", "Running")
+		task.wait(0.2)
+		assert(monsterBody().CanTouch == true, "expected CanTouch true in Running")
+		state:SetAttribute("RoundState", "Ended")
+		task.wait(0.2)
+		assert(monsterBody().CanTouch == false, "expected CanTouch false in Ended")
+		state:SetAttribute("RoundState", "Lobby")
+	end,
+
 	["monster Y is never below the floor"] = function()
 		state:SetAttribute("RoundState", "Running")
 		task.wait(0.2)

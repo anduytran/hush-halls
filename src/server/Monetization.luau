@@ -3,6 +3,7 @@
 --   Monetization.onPass("VIP", function(player) ... end)            -- runs when an owner joins, and right after buying
 --   Monetization.onProduct("Coins100", function(player) ... return true end)  -- return true once it's given
 -- A product's receipt is recorded, so a purchase Roblox retries is never given twice.
+-- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
@@ -12,11 +13,29 @@ local Monetization = {}
 
 type PassHandler = (player: Player) -> ()
 type ProductHandler = (player: Player) -> boolean
+type Receipt = { PlayerId: number, PurchaseId: string, ProductId: number }
 
 local passHandlers: { [string]: PassHandler } = {}
 local productHandlers: { [string]: ProductHandler } = {}
 local owned: { [Player]: { [string]: boolean } } = {}
-local history = DataStoreService:GetDataStore("PurchaseHistory")
+local history: DataStore? = nil
+-- Receipts being handled right now, so a duplicate ProcessReceipt call can't grant twice.
+local processing: { [string]: boolean } = {}
+
+local function getHistory(): DataStore?
+	if history then
+		return history
+	end
+	local ok, store = pcall(function()
+		return DataStoreService:GetDataStore("PurchaseHistory")
+	end)
+	if not ok then
+		warn(`[Monetization] purchase history unavailable: {store}`)
+		return nil
+	end
+	history = store
+	return store
+end
 
 local function keyFor(list: { [string]: Products.Item }, id: number): string?
 	if id == 0 then
@@ -93,37 +112,58 @@ MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passI
 	end
 end)
 
+-- Check the record, grant outside any DataStore callback (handlers may yield), then record it.
+local function processReceipt(receipt: Receipt, store: DataStore, grant: ProductHandler, buyer: Player)
+	local receiptKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
+	local readOk, done = pcall(function()
+		return store:GetAsync(receiptKey)
+	end)
+	if not readOk then
+		warn(`[Monetization] couldn't read purchase {receipt.PurchaseId}: {done}`)
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	if done then
+		return Enum.ProductPurchaseDecision.PurchaseGranted
+	end
+
+	local grantOk, given = pcall(grant, buyer)
+	if not grantOk then
+		warn(`[Monetization] handler failed for purchase {receipt.PurchaseId}: {given}`)
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	if given ~= true then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local saveOk, err = pcall(function()
+		store:UpdateAsync(receiptKey, function()
+			return true
+		end)
+	end)
+	if not saveOk then
+		-- It was given, so tell Roblox it's done rather than risk giving it again on retry.
+		warn(`[Monetization] granted purchase {receipt.PurchaseId} but couldn't record it: {err}`)
+	end
+	return Enum.ProductPurchaseDecision.PurchaseGranted
+end
+
 MarketplaceService.ProcessReceipt = function(receipt)
 	local key = keyFor(Products.Products, receipt.ProductId)
 	local handler = if key then productHandlers[key] else nil
 	local player = Players:GetPlayerByUserId(receipt.PlayerId)
-	if not handler or not player then
+	local store = getHistory()
+	local processingKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
+	if not handler or not player or not store or processing[processingKey] then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
-	local grant: ProductHandler = handler
-	local buyer: Player = player
-	local granted = false
-	local ok, err = pcall(function()
-		history:UpdateAsync(`{receipt.PlayerId}_{receipt.PurchaseId}`, function(done)
-			if done then
-				granted = true
-				return nil
-			end
-			if grant(buyer) then
-				granted = true
-				return true
-			end
-			return nil
-		end)
-	end)
+	processing[processingKey] = true
+	local ok, decision = pcall(processReceipt, receipt, store, handler, player)
+	processing[processingKey] = nil
 	if not ok then
-		warn(`[Monetization] couldn't record purchase {receipt.PurchaseId}: {err}`)
+		warn(`[Monetization] couldn't process purchase {receipt.PurchaseId}: {decision}`)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
-	if granted then
-		return Enum.ProductPurchaseDecision.PurchaseGranted
-	end
-	return Enum.ProductPurchaseDecision.NotProcessedYet
+	return decision
 end
 
 return Monetization

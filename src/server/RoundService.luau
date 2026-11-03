@@ -1,9 +1,12 @@
 --!strict
 -- Round loop: Lobby (15s) -> Running (up to 120s) -> Ended (5s) -> Lobby.
 -- Players who touch Hall.Exit while Running escape: +10 Coins and a teleport to the lobby platform above Start.
+-- Player attribute InRound is true while a participant is alive and hasn't escaped; Monster and NoiseService
+-- only hear, kill and drown InRound players.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local GameState = require(ReplicatedStorage.Shared.GameState)
 local HallBuilder = require(script.Parent.Map.HallBuilder)
 
 local LOBBY_TIME = 15
@@ -12,9 +15,17 @@ local ENDED_TIME = 5
 local ESCAPE_REWARD = 10
 local PLATFORM_HEIGHT = 30
 local TICK = 0.25
+local LOAD_ATTEMPTS = 3
+local LOAD_RETRY_DELAY = 1
+local SPAWN_TIMEOUT = 10
 
 local RoundService = {}
 
+local State = GameState.State
+local started = false
+
+-- Counts rounds, so a Died handler from an earlier round can't mark anyone dead in this one.
+local round = 0
 -- Players taking part in the current round, and how their round went.
 local participants: { [Player]: boolean } = {}
 local dead: { [Player]: boolean } = {}
@@ -41,6 +52,10 @@ local function addCoins(player: Player, amount: number)
 end
 
 local function makePlatform(hall: Instance, start: BasePart): BasePart
+	local existing = hall:FindFirstChild("LobbyPlatform")
+	if existing and existing:IsA("BasePart") then
+		return existing
+	end
 	local platform = Instance.new("Part")
 	platform.Name = "LobbyPlatform"
 	platform.Anchored = true
@@ -53,23 +68,43 @@ local function makePlatform(hall: Instance, start: BasePart): BasePart
 	return platform
 end
 
+-- Alive, still in the hall, and hasn't escaped.
+local function isActive(player: Player): boolean
+	return participants[player] == true and not dead[player] and not player:GetAttribute("Escaped")
+end
+
 local function roundOver(): boolean
 	for player in participants do
-		if player.Parent ~= Players then
-			continue
-		end
-		if not player:GetAttribute("Escaped") and not dead[player] then
+		if player.Parent == Players and isActive(player) then
 			return false
 		end
 	end
 	return true
 end
 
-function RoundService.start()
-	local State = ReplicatedStorage:WaitForChild("State")
+-- LoadCharacter can fail (e.g. the player is leaving); retry a few times before giving up.
+local function loadCharacter(player: Player): Model?
+	for attempt = 1, LOAD_ATTEMPTS do
+		if player.Parent ~= Players then
+			return nil
+		end
+		local ok, err = pcall(player.LoadCharacter, player)
+		if ok and player.Character then
+			return player.Character
+		end
+		warn(`[RoundService] LoadCharacter failed for {player.Name} (attempt {attempt}): {err}`)
+		task.wait(LOAD_RETRY_DELAY)
+	end
+	return player.Character
+end
 
-	HallBuilder.build()
-	local hall = workspace:WaitForChild("Hall")
+function RoundService.start()
+	if started then
+		return
+	end
+	started = true
+
+	local hall = workspace:FindFirstChild("Hall") or HallBuilder.build()
 	local start = hall:WaitForChild("Start") :: BasePart
 	local exit = hall:WaitForChild("Exit") :: BasePart
 	local platform = makePlatform(hall, start)
@@ -82,27 +117,48 @@ function RoundService.start()
 		end
 	end
 
-	local function spawnAtStart(player: Player)
-		player:LoadCharacter()
-		local character = player.Character
-		if not character or player.Parent ~= Players then
+	local function spawnAtStart(player: Player, thisRound: number)
+		local character = loadCharacter(player)
+		if round ~= thisRound or player.Parent ~= Players then
 			return
 		end
-		character:PivotTo(start.CFrame + Vector3.new(math.random(-3, 3), 4, math.random(-3, 3)))
+		if not character then
+			-- Couldn't give them a body: drop them from the round so it isn't held open waiting for them.
+			participants[player] = nil
+			return
+		end
+		character:PivotTo(start.CFrame + Vector3.new(math.random(-2, 2), 4, math.random(-2, 2)))
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if humanoid then
 			humanoid.Died:Connect(function()
-				if participants[player] and State:GetAttribute("RoundState") == "Running" then
+				if round == thisRound and participants[player] and not player:GetAttribute("Escaped") then
 					dead[player] = true
+					player:SetAttribute("InRound", false)
 				end
 			end)
 		end
+		player:SetAttribute("InRound", true)
+	end
+
+	local function onPlayerAdded(player: Player)
+		setupLeaderstats(player)
+		player:SetAttribute("InRound", false)
+		-- Late joiners and respawned dead players watch from the platform, out of the monster's way.
+		player.CharacterAdded:Connect(function(character)
+			if State:GetAttribute("RoundState") ~= "Running" or isActive(player) then
+				return
+			end
+			character:WaitForChild("HumanoidRootPart", 10)
+			if character.Parent and player.Character == character and not isActive(player) then
+				sendToPlatform(player)
+			end
+		end)
 	end
 
 	for _, player in Players:GetPlayers() do
-		setupLeaderstats(player)
+		onPlayerAdded(player)
 	end
-	Players.PlayerAdded:Connect(setupLeaderstats)
+	Players.PlayerAdded:Connect(onPlayerAdded)
 	Players.PlayerRemoving:Connect(function(player)
 		participants[player] = nil
 		dead[player] = nil
@@ -117,7 +173,7 @@ function RoundService.start()
 			return
 		end
 		local player = Players:GetPlayerFromCharacter(character)
-		if not player or not participants[player] or dead[player] or player:GetAttribute("Escaped") then
+		if not player or not isActive(player) then
 			return
 		end
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
@@ -125,6 +181,7 @@ function RoundService.start()
 			return
 		end
 		player:SetAttribute("Escaped", true)
+		player:SetAttribute("InRound", false)
 		addCoins(player, ESCAPE_REWARD)
 		sendToPlatform(player)
 	end)
@@ -141,18 +198,34 @@ function RoundService.start()
 			end
 			State:SetAttribute("TimeLeft", 0)
 
-			-- Running
+			-- Spawn everyone at Start, then start the clock once they're in place.
+			round += 1
+			local thisRound = round
 			table.clear(participants)
 			table.clear(dead)
 			for _, player in Players:GetPlayers() do
 				participants[player] = true
 				player:SetAttribute("Escaped", false)
 			end
+			local pending = 0
 			for player in participants do
-				task.spawn(spawnAtStart, player)
+				pending += 1
+				task.spawn(function()
+					local ok, err = pcall(spawnAtStart, player, thisRound)
+					if not ok then
+						warn(`[RoundService] couldn't spawn {player.Name}: {err}`)
+						participants[player] = nil
+					end
+					pending -= 1
+				end)
 			end
-			State:SetAttribute("RoundState", "Running")
+			local spawnDeadline = os.clock() + SPAWN_TIMEOUT
+			while pending > 0 and os.clock() < spawnDeadline do
+				task.wait(0.1)
+			end
 
+			-- Running
+			State:SetAttribute("RoundState", "Running")
 			local endTime = os.clock() + RUN_TIME
 			State:SetAttribute("TimeLeft", RUN_TIME)
 			while os.clock() < endTime do
@@ -165,8 +238,11 @@ function RoundService.start()
 
 			-- Ended
 			State:SetAttribute("RoundState", "Ended")
-			for left2 = ENDED_TIME, 1, -1 do
-				State:SetAttribute("TimeLeft", left2)
+			for _, player in Players:GetPlayers() do
+				player:SetAttribute("InRound", false)
+			end
+			for endLeft = ENDED_TIME, 1, -1 do
+				State:SetAttribute("TimeLeft", endLeft)
 				task.wait(1)
 			end
 			table.clear(participants)

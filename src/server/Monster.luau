@@ -1,10 +1,13 @@
 --!strict
 -- The blind monster: hunts the loudest player by sound while a round is running.
--- Reads ReplicatedStorage.State attributes: Noise (0-1) and RoundState.
+-- Reads ReplicatedStorage.State attributes: Noise (0-1) and RoundState, and the InRound player attribute.
+-- It only touches (and kills) while Running; its round connections are dropped when the round ends.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+
+local GameState = require(ReplicatedStorage.Shared.GameState)
 
 local Monster = {}
 
@@ -20,8 +23,15 @@ local FLOOR_Y = 0
 local PARK_DISTANCE = 200
 local ARRIVE_DISTANCE = 1
 local ENTRY_FALLBACK_Z = 120
+local SAMPLE_INTERVAL = 0.2 -- how often player speeds are measured from their positions
+local MAX_PLAUSIBLE_SPEED = 60 -- faster than this between samples is a teleport, not footsteps
+
+type Sample = { root: BasePart, position: Vector3, speed: number }
 
 local started = false
+-- Server-measured horizontal speed of each InRound player, from position changes between samples.
+local samples: { [Player]: Sample } = {}
+local sinceSample = 0
 
 local function buildMonster(hall: Instance): Part
 	local body = Instance.new("Part")
@@ -31,7 +41,7 @@ local function buildMonster(hall: Instance): Part
 	body.Material = Enum.Material.SmoothPlastic
 	body.Anchored = true
 	body.CanCollide = false
-	body.CanTouch = true
+	body.CanTouch = false -- turned on only while a round is Running
 	body.CastShadow = true
 
 	for _, side in { -1, 1 } do
@@ -99,25 +109,68 @@ local function clampY(pos: Vector3): Vector3
 	return Vector3.new(pos.X, math.max(pos.Y, FLOOR_Y + SIZE / 2), pos.Z)
 end
 
+local function aliveRoot(player: Player): BasePart?
+	if player:GetAttribute("InRound") ~= true then
+		return nil
+	end
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+		return root
+	end
+	return nil
+end
+
+-- Measures speed from where the server sees each character, not from the velocity the client reports.
+local function sampleSpeeds(dt: number)
+	sinceSample += dt
+	if sinceSample < SAMPLE_INTERVAL then
+		return
+	end
+	local elapsed = sinceSample
+	sinceSample = 0
+	for _, player in Players:GetPlayers() do
+		local root = aliveRoot(player)
+		if not root then
+			samples[player] = nil
+			continue
+		end
+		local position = root.Position
+		local previous = samples[player]
+		local speed = 0
+		if previous and previous.root == root then
+			local delta = position - previous.position
+			speed = Vector3.new(delta.X, 0, delta.Z).Magnitude / elapsed
+			if speed > MAX_PLAUSIBLE_SPEED then
+				speed = 0
+			end
+		end
+		samples[player] = { root = root, position = position, speed = speed }
+	end
+	for player in samples do
+		if player.Parent ~= Players then
+			samples[player] = nil
+		end
+	end
+end
+
 -- Loudest alive player within range: sprinters beat walkers, then fastest wins.
 -- Sneakers (below HEARD_SPEED) are silent.
 local function findLoudest(from: Vector3): Vector3?
 	local bestPos: Vector3? = nil
 	local bestScore = -math.huge
-	for _, player in Players:GetPlayers() do
-		local character = player.Character
-		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-		local root = character and character:FindFirstChild("HumanoidRootPart")
-		if humanoid and root and root:IsA("BasePart") and humanoid.Health > 0 then
-			local v = root.AssemblyLinearVelocity
-			local speed = Vector3.new(v.X, 0, v.Z).Magnitude
-			local distance = (root.Position - from).Magnitude
-			if speed >= HEARD_SPEED and distance <= HEARING_RANGE then
-				local score = speed + (if speed > SPRINT_SPEED then 1000 else 0)
-				if score > bestScore then
-					bestScore = score
-					bestPos = root.Position
-				end
+	for player, sample in samples do
+		if player.Parent ~= Players or aliveRoot(player) ~= sample.root then
+			continue
+		end
+		local speed = sample.speed
+		local distance = (sample.position - from).Magnitude
+		if speed >= HEARD_SPEED and distance <= HEARING_RANGE then
+			local score = speed + (if speed > SPRINT_SPEED then 1000 else 0)
+			if score > bestScore then
+				bestScore = score
+				bestPos = sample.position
 			end
 		end
 	end
@@ -149,42 +202,28 @@ function Monster.start()
 	end
 	started = true
 
-	local state = ReplicatedStorage:WaitForChild("State")
+	local state = GameState.State
 	local hall = workspace:WaitForChild("Hall")
 	local body = buildMonster(hall)
 	body.CFrame = CFrame.new(clampY(parkPosition(hall)))
 
 	local lastHeard: Vector3? = nil
-	local wasRunning = false
+	local connections: { RBXScriptConnection } = {}
 
-	body.Touched:Connect(function(hit)
-		if state:GetAttribute("RoundState") ~= "Running" then
-			return
-		end
-		local character = hit.Parent
-		if character == nil then
+	local function onTouched(hit: BasePart)
+		local character = hit:FindFirstAncestorOfClass("Model")
+		local player = character and Players:GetPlayerFromCharacter(character)
+		if not character or not player or player:GetAttribute("InRound") ~= true then
 			return
 		end
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if humanoid and humanoid.Health > 0 and Players:GetPlayerFromCharacter(character) then
+		if humanoid and humanoid.Health > 0 then
 			humanoid.Health = 0
 		end
-	end)
+	end
 
-	RunService.Heartbeat:Connect(function(dt)
-		local running = state:GetAttribute("RoundState") == "Running"
-		if not running then
-			if wasRunning or lastHeard ~= nil then
-				body.CFrame = CFrame.new(clampY(parkPosition(hall)))
-				lastHeard = nil
-			end
-			wasRunning = false
-			return
-		end
-		if not wasRunning then
-			body.CFrame = CFrame.new(clampY(entryPosition(hall)))
-		end
-		wasRunning = true
+	local function onHeartbeat(dt: number)
+		sampleSpeeds(dt)
 
 		local noise = state:GetAttribute("Noise")
 		local level = math.clamp(if typeof(noise) == "number" then noise else 0, 0, 1)
@@ -204,7 +243,40 @@ function Monster.start()
 		elseif lastHeard and moveToward(body, lastHeard, DRIFT_SPEED, dt) then
 			lastHeard = nil
 		end
-	end)
+	end
+
+	local function endRound()
+		for _, connection in connections do
+			connection:Disconnect()
+		end
+		table.clear(connections)
+		table.clear(samples)
+		sinceSample = 0
+		lastHeard = nil
+		body.CanTouch = false
+		body.CFrame = CFrame.new(clampY(parkPosition(hall)))
+	end
+
+	local function beginRound()
+		endRound()
+		body.CFrame = CFrame.new(clampY(entryPosition(hall)))
+		body.CanTouch = true
+		table.insert(connections, body.Touched:Connect(onTouched))
+		table.insert(connections, RunService.Heartbeat:Connect(onHeartbeat))
+	end
+
+	local function onRoundState()
+		if state:GetAttribute("RoundState") == "Running" then
+			if #connections == 0 then
+				beginRound()
+			end
+		elseif #connections > 0 then
+			endRound()
+		end
+	end
+
+	state:GetAttributeChangedSignal("RoundState"):Connect(onRoundState)
+	onRoundState()
 end
 
 return Monster

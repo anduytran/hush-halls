@@ -1,22 +1,30 @@
 --!strict
 
 local Config = require(game:GetService("ReplicatedStorage").Shared.Config)
+local HallBuilder = require(script.Parent.Map.HallBuilder)
+local Monetization = require(script.Parent.Monetization)
+local Monster = require(script.Parent.Monster)
+local NoiseService = require(script.Parent.NoiseService)
+local RoundService = require(script.Parent.RoundService)
 
--- Game systems start first: Monetization errors on DataStore access in an unpublished Studio place.
--- Each start() runs in its own thread, because Monster waits for the Hall that RoundService builds.
-for _, name in { "NoiseService", "Monster", "RoundService" } do
-	task.spawn(function()
-		local ok, err = pcall(function()
-			local module = require((script.Parent :: Instance):FindFirstChild(name) :: ModuleScript) :: any
-			module.start()
-		end)
-		if not ok then
-			warn(`[server] {name} failed to start: {err}`)
-		end
-	end)
+-- The hall is built first: Monster lives in it and RoundService plays rounds in it.
+local built, buildErr = pcall(HallBuilder.build)
+if not built then
+	warn(`[server] couldn't build the hall: {buildErr}`)
 end
 
-local Monetization = require(script.Parent.Monetization)
+-- Each start() returns straight away. One failing must not stop the rest.
+local systems: { { name: string, start: () -> () } } = {
+	{ name = "NoiseService", start = NoiseService.start },
+	{ name = "Monster", start = Monster.start },
+	{ name = "RoundService", start = RoundService.start },
+}
+for _, system in systems do
+	local ok, err = pcall(system.start)
+	if not ok then
+		warn(`[server] {system.name} failed to start: {err}`)
+	end
+end
 
 -- Cosmetic and coin grants only: nothing sold here touches noise, speed or the monster.
 local function attachTrail(character: Model)
@@ -84,8 +92,9 @@ Monetization.onPass("VIP", function(player)
 end)
 
 Monetization.onProduct("Coins100", function(player)
-	local stats = player:WaitForChild("leaderstats", 10)
-	local coins = if stats then stats:WaitForChild("Coins", 10) else nil
+	-- Look up without waiting: if leaderstats isn't there yet, returning false makes Roblox retry later.
+	local stats = player:FindFirstChild("leaderstats")
+	local coins = if stats then stats:FindFirstChild("Coins") else nil
 	if not coins or not (coins:IsA("IntValue") or coins:IsA("NumberValue")) then
 		return false
 	end
