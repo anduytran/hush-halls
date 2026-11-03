@@ -5,6 +5,7 @@
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 
 local WATER_MAX = 20
@@ -21,6 +22,16 @@ local FONT_BOLD = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.Fo
 local FONT_MEDIUM = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Medium)
 
 local Hud = {}
+
+-- Studio-only spec hooks per mounted gui (weak keys, so destroyed HUDs are collected)
+local testHooks: { [ScreenGui]: any } = setmetatable({}, { __mode = "k" }) :: any
+if RunService:IsStudio() then
+	Hud._test = {
+		hooks = function(gui: ScreenGui): any
+			return testHooks[gui]
+		end,
+	}
+end
 
 local function corner(parent: Instance, radius: UDim?)
 	local c = Instance.new("UICorner")
@@ -95,13 +106,77 @@ function Hud.mount()
 	topPad.Parent = top
 	local roundText = label(top, "RoundText", FONT_BOLD, 28)
 
-	-- Goal line under the timer; a child of RoundInfo so nothing else in the HUD moves
-	local goalText = label(top, "GoalText", FONT_MEDIUM, 20)
-	goalText.AnchorPoint = Vector2.new(0.5, 0)
-	goalText.Position = UDim2.new(0.5, 0, 1, 10)
-	goalText.Size = UDim2.new(2.4, 0, 0, 40)
+	-- Goal line: its own panel, 4 px under RoundInfo. It keeps RoundInfo's width (0.28 scale, 160-360 px)
+	-- so on a 375 px phone it sits in the centre column and clears Coins and the Shop button on the right.
+	-- Height 0.08 scale (44-64 px) leaves room for two wrapped lines at 14 px. Its top follows RoundInfo's
+	-- real height, because RoundInfo's 40-64 px clamp means a plain scale offset would drift or overlap.
+	local goalPanel = panel(gui, "GoalPanel")
+	goalPanel.AnchorPoint = Vector2.new(0.5, 0)
+	goalPanel.Size = UDim2.fromScale(0.28, 0.08)
+	local goalLimit = Instance.new("UISizeConstraint")
+	goalLimit.MinSize = Vector2.new(160, 44)
+	goalLimit.MaxSize = Vector2.new(360, 64)
+	goalLimit.Parent = goalPanel
+	local goalPad = Instance.new("UIPadding")
+	goalPad.PaddingLeft = UDim.new(0, 8)
+	goalPad.PaddingRight = UDim.new(0, 8)
+	goalPad.PaddingTop = UDim.new(0, 4)
+	goalPad.PaddingBottom = UDim.new(0, 4)
+	goalPad.Parent = goalPanel
+	local goalText = label(goalPanel, "GoalText", FONT_MEDIUM, 20)
 	goalText.TextWrapped = true
-	goalText.TextStrokeTransparency = 0.5
+	local function placeGoal()
+		goalPanel.Position = UDim2.new(0.5, 0, 0, 8 + top.AbsoluteSize.Y + 4)
+	end
+	placeGoal()
+
+	-- Signal connections, dropped when the HUD is destroyed or the player leaves
+	local connections: { RBXScriptConnection } = {}
+	local alive = true
+	connections[1] = top:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeGoal)
+	local function disconnectAll()
+		alive = false
+		for _, connection in connections do
+			connection:Disconnect()
+		end
+		table.clear(connections)
+		ContextActionService:UnbindAction("HushSprint")
+	end
+	gui.Destroying:Connect(disconnectAll)
+	table.insert(
+		connections,
+		Players.PlayerRemoving:Connect(function(leaving)
+			if leaving == player then
+				disconnectAll()
+			end
+		end)
+	)
+
+	local function setGoal(roundState: any, escaped: boolean)
+		if roundState == "Running" and escaped then
+			goalText.Text = "You escaped! Wait for the next round."
+			goalText.TextColor3 = COLOR_NOISE
+		elseif roundState == "Running" then
+			goalText.Text = "Reach the EXIT. Sprinting is loud."
+			goalText.TextColor3 = COLOR_TEXT
+		elseif roundState == "Ended" then
+			goalText.Text = "Round over."
+			goalText.TextColor3 = COLOR_TEXT
+		else
+			goalText.Text = "Next round soon. Reach the EXIT."
+			goalText.TextColor3 = COLOR_TEXT
+		end
+	end
+	-- Studio-only hook for the spec: drive the goal line without writing replicated State,
+	-- and count live connections. Kept per gui: Hud._test.hooks(gui).
+	if RunService:IsStudio() then
+		testHooks[gui] = {
+			setGoal = setGoal,
+			connectionCount = function(): number
+				return #connections
+			end,
+		}
+	end
 
 	-- Top right: coins
 	local coins = panel(gui, "Coins")
@@ -223,29 +298,19 @@ function Hud.mount()
 			noiseCaption.Text = if loud then "Noise: LOUD" else "Noise"
 		end
 		local function refreshGoal()
-			local roundState = state:GetAttribute("RoundState")
-			local escaped = player:GetAttribute("Escaped") == true
-			if roundState == "Running" and escaped then
-				goalText.Text = "You escaped! Wait for the next round."
-				goalText.TextColor3 = COLOR_NOISE
-			elseif roundState == "Running" then
-				goalText.Text = "Reach the EXIT. Sprinting is loud."
-				goalText.TextColor3 = COLOR_TEXT
-			elseif roundState == "Ended" then
-				goalText.Text = "Round over."
-				goalText.TextColor3 = COLOR_TEXT
-			else
-				goalText.Text = "Next round soon. Reach the EXIT before the water rises."
-				goalText.TextColor3 = COLOR_TEXT
-			end
+			setGoal(state:GetAttribute("RoundState"), player:GetAttribute("Escaped") == true)
 		end
-		state:GetAttributeChangedSignal("RoundState"):Connect(refreshGoal)
-		player:GetAttributeChangedSignal("Escaped"):Connect(refreshGoal)
+		-- The HUD may have been destroyed (or the player left) while State was still loading
+		if not alive then
+			return
+		end
+		table.insert(connections, state:GetAttributeChangedSignal("RoundState"):Connect(refreshGoal))
+		table.insert(connections, player:GetAttributeChangedSignal("Escaped"):Connect(refreshGoal))
 		refreshGoal()
-		state:GetAttributeChangedSignal("RoundState"):Connect(refreshRound)
-		state:GetAttributeChangedSignal("TimeLeft"):Connect(refreshRound)
-		state:GetAttributeChangedSignal("WaterLevel"):Connect(refreshWater)
-		state:GetAttributeChangedSignal("Noise"):Connect(refreshNoise)
+		table.insert(connections, state:GetAttributeChangedSignal("RoundState"):Connect(refreshRound))
+		table.insert(connections, state:GetAttributeChangedSignal("TimeLeft"):Connect(refreshRound))
+		table.insert(connections, state:GetAttributeChangedSignal("WaterLevel"):Connect(refreshWater))
+		table.insert(connections, state:GetAttributeChangedSignal("Noise"):Connect(refreshNoise))
 		refreshRound()
 		refreshWater()
 		refreshNoise()
@@ -258,7 +323,10 @@ function Hud.mount()
 		local function refresh()
 			coinsText.Text = `Coins: {coinValue.Value}`
 		end
-		coinValue.Changed:Connect(refresh)
+		if not alive then
+			return
+		end
+		table.insert(connections, coinValue.Changed:Connect(refresh))
 		refresh()
 	end)
 
@@ -286,24 +354,30 @@ function Hud.mount()
 
 	-- Track the press globally so sliding a finger off the button still counts as a release
 	local pressInput: InputObject? = nil
-	sprintButton.InputBegan:Connect(function(input)
-		if
-			input.UserInputType == Enum.UserInputType.Touch
-			or input.UserInputType == Enum.UserInputType.MouseButton1
-		then
-			pressInput = input
-			setSprint("Button", true)
-		end
-	end)
-	UserInputService.InputEnded:Connect(function(input)
-		if pressInput and (input == pressInput or input.UserInputType == pressInput.UserInputType) then
-			if input.UserInputType == Enum.UserInputType.Touch and input ~= pressInput then
-				return
+	table.insert(
+		connections,
+		sprintButton.InputBegan:Connect(function(input)
+			if
+				input.UserInputType == Enum.UserInputType.Touch
+				or input.UserInputType == Enum.UserInputType.MouseButton1
+			then
+				pressInput = input
+				setSprint("Button", true)
 			end
-			pressInput = nil
-			setSprint("Button", false)
-		end
-	end)
+		end)
+	)
+	table.insert(
+		connections,
+		UserInputService.InputEnded:Connect(function(input)
+			if pressInput and (input == pressInput or input.UserInputType == pressInput.UserInputType) then
+				if input.UserInputType == Enum.UserInputType.Touch and input ~= pressInput then
+					return
+				end
+				pressInput = nil
+				setSprint("Button", false)
+			end
+		end)
+	)
 
 	ContextActionService:BindAction("HushSprint", function(_, inputState)
 		if inputState == Enum.UserInputState.Begin then
