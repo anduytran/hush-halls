@@ -135,7 +135,12 @@ Sprint 26 (2026-11-03): two-player Studio round (merged; one real player plus a 
 - [x] Fake killed, real player escaped (+10, round ended early); fake added mid-round spectated; one fake escaped (+10); sprinting real player caught.
 - [x] Fix: `Escaped` now clears when the round ends, so nobody reads as escaped in the next Lobby. Notes in `knowledge/scripter/live-smoke.md`.
 
+Sprint 27 (2026-11-03): touch sprint button tested (merged; 15 of 15 Hud specs pass in Studio, 5 new; not played on a real touch device).
+- [x] Studio-only HUD hooks (`forceTouch`, `pressSprint`, `releaseSprint`, `isSprinting`) run the same press/release path as a real touch, including the Sprint remote.
+- [x] Destroying the HUD releases a held sprint, so the server isn't left sprinting.
+
 ## Needs a playtest
+- Sprint 27: touch sprint button on a real phone/tablet: hold sprints, release (or sliding off) walks, respawn mid-hold doesn't leave you sprinting.
 - Sprints 25–26 had one real client only (Studio tools can only play solo; sprint 26 added a fake player). A true two-client run (Test → Clients and Servers, by hand) is still unplayed: Monster/NoiseService catching a second real player, join mid-round, several escapes. Also check: real player and a fake spawning at the same spot once got stuck climbing at Start.
 - Sprint 26: `Escaped` clearing at Ended → Lobby in a live server (HUD goal line resets).
 - Sprint 24: a player who leaves mid-spawn in a live server is dropped cleanly and the round starts for everyone else.

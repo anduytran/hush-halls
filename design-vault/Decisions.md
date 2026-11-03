@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 27: touch sprint test hooks
+- **The touch sprint button is driven in specs through Studio-only HUD hooks that call the same press/release code as a real touch**, and unmounting the HUD releases any held sprint. Alternative considered: faking InputObjects; rejected as they can't be built from Luau.
+
 ## 2026-11-03 — Sprint 26: Escaped clears at round end
 - **`Escaped` is reset for every player when the round ends**, so the next Lobby never shows someone as escaped. Two-player check used one real client plus a fake, because the Studio tools can only play solo. Alternative considered: clearing it at the next round's start; rejected as the Lobby HUD would read stale state.
 
