@@ -2,6 +2,11 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 10: receipt follow-ups
+- **Live attempts heartbeat their pending marker every 60 s**, so the 24 h stale rule only frees markers left by dead servers. Accepted cost: a grant handler that never returns keeps its receipt busy for good.
+- **A pending marker with no time is busy**, not released; the reserve restamps it so it can go stale a day later.
+- **BindToClose drain lowered to 20 s** (from 25), well inside Roblox's 30 s limit.
+
 ## 2026-11-03 — Sprint 9: receipt follow-ups
 - **Pending markers go stale after 24 h** and count as released. Eases sprint 8's stuck-forever cost; a day is far beyond any live attempt. Accepted cost: a yielding grant whose done write never lands may be granted twice a day later.
 - **Background writes capped at 10 tries**, and BindToClose drains in-flight work for up to 25 s.

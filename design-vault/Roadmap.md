@@ -63,8 +63,15 @@ Sprint 9 (2026-11-03): five sprint-8 reviewer follow-ups on receipts (merged; sc
 - [x] Background writes give up after 10 tries; a failed reserve releases only if the stored marker holds our token; BindToClose waits up to 25 s for in-flight writes and late grants.
 - [x] `Monetization.cloud.spec.luau` runs on a fake clock. Known cost: a yielding grant whose done write never lands can be granted again after 24 h.
 
+Sprint 10 (2026-11-03): sprint-9 reviewer follow-ups on receipts (merged; scripter reports checks pass, not run in a live round).
+- [x] A live attempt heartbeats its pending marker's time every 60 s (while a yielding grant runs and while results are retried), so only markers from dead servers go stale. Heartbeat can't undo done/released.
+- [x] A pending marker with no time now counts as busy and is restamped by the reserve.
+- [x] BindToClose waits 20 s (was 25). Warnings name the receipt key and go through a hookable logger.
+- [x] `Monetization.cloud.spec.luau` gained a fake timer (`advance`) and warn capture. Known cost: a handler that never returns keeps its receipt busy forever.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–9.
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–10.
+- Run `Monetization.cloud.spec.luau` (sprint 10: heartbeat, no-time restamp, 20 s drain, warn text).
 - Run `Monetization.cloud.spec.luau` (sprint 9: 24 h stale rule, retry cap, token-checked release, shutdown drain).
 - Run `SpeedSampler.spec.luau` (sprint 7: teleports hold the previous reading).
 - Run `RoundService.cloud.spec.luau`: forced failure in each start step rolls back cleanly.
