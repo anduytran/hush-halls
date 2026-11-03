@@ -86,7 +86,11 @@ Sprint 13 (2026-11-03): sprint-12 reviewer follow-ups on receipts (merged; scrip
 - [x] Spec write failures now fail inside the real UpdateAsync (nothing written, then throws).
 - Known limit (documented in code): after the 30 min heartbeat cap, a receipt can still be granted twice once its marker goes stale or the block expires.
 
+Sprint 14 (2026-11-03): VIP 2x coins on escape (merged; new spec in `RoundService.cloud.spec.luau`, not run in a live round).
+- [x] Escape pays 10 × the player's `CoinMultiplier` attribute (VIP pass sets 2 → 20 coins); a missing or bad value (non-number, NaN, < 1, infinite) counts as 1.
+
 ## Needs a playtest
+- VIP escape pays 20 coins, non-VIP 10 (sprint 14; needs a VIP pass ID to test the real grant).
 None of these have run in a live round yet. Studio wasn't reachable in sprints 1–11; sprints 12–13 receipt specs ran in Studio (54, then 59 pass) but not in a live round.
 - Buy a product in a published place and check sprint 13: hooks absent on a live server, expired blocks pruned.
 - Buy a product in a published place and check the receipt flow (sprint 12: shared heartbeat window, done-only regrant block).
@@ -110,7 +114,6 @@ None of these have run in a live round yet. Studio wasn't reachable in sprints 1
 - Monetization now opens its DataStore lazily, so it no longer breaks startup, but receipts still can't be tested in an unpublished Studio place. A full test needs the place published with API access turned on.
 
 ## Next
-- VIP "2x coins" is advertised but not built (see [[Mechanics/Products and Grants]]).
 - Fix the walk/hearing mismatch (see [[Mechanics/Blind Monster]], open questions).
 - Write the sprint 1 numbers into [[Balance]].
 - Milestone 2 — Feel: footstep sounds, monster audio, water VFX, camera shake, proper hall art.

@@ -1,5 +1,5 @@
 ---
-status: in-progress   # receipts hardened in sprint 2, sprint 4 reserve → grant → mark done (grant outside UpdateAsync), sprint 5 per-attempt tokens, sprint 8 no stale takeover (owner-only markers, released state, late results retried until recorded), sprint 9 24 h stale rule + retry cap + shutdown drain, sprint 10 60 s heartbeat on live markers + 20 s drain, sprint 11 heartbeat capped at 30 min + one-time restamp + no regrant after give-up, sprint 12 per-attempt heartbeat window + done-only expiring regrant block + locked test hooks, sprint 13 Studio-only test hooks + gave-up block pruning (59 spec tests pass in Studio), blocked on Creator Hub IDs
+status: in-progress   # receipts hardened in sprint 2, sprint 4 reserve → grant → mark done (grant outside UpdateAsync), sprint 5 per-attempt tokens, sprint 8 no stale takeover (owner-only markers, released state, late results retried until recorded), sprint 9 24 h stale rule + retry cap + shutdown drain, sprint 10 60 s heartbeat on live markers + 20 s drain, sprint 11 heartbeat capped at 30 min + one-time restamp + no regrant after give-up, sprint 12 per-attempt heartbeat window + done-only expiring regrant block + locked test hooks, sprint 13 Studio-only test hooks + gave-up block pruning (59 spec tests pass in Studio), sprint 14 VIP 2x coins via CoinMultiplier attribute, blocked on Creator Hub IDs
 tags: [design, mechanic]
 ---
 # Products and grants
@@ -17,4 +17,4 @@ Neon Trail pass (99 R$): a cyan trail. VIP pass (199 R$): a gold name tag and 2x
 
 ## Open questions
 - Blocked: all IDs are 0 until the items are created in the Creator Hub.
-- Gap: VIP's "2x coins" isn't built. Only the name tag is granted, and RoundService always pays +10. Either build it or change the pass description.
+- VIP 2x coins (sprint 14): the VIP grant sets the `CoinMultiplier` attribute to 2 (`src/server/main.server.luau`); `RoundService` `addCoins` multiplies by it, treating bad values as 1. VIP escape pays 20.

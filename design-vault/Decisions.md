@@ -2,6 +2,10 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 14: VIP 2x coins
+- **Built the advertised VIP 2x coins** rather than changing the pass description. The VIP grant sets a `CoinMultiplier = 2` attribute; RoundService's `addCoins` multiplies by it. Only the escape reward exists today, so VIP escape pays 20.
+- **Bad multiplier values count as 1**, so a broken attribute can never lower or blow up a payout.
+
 ## 2026-11-03 — Sprint 13: receipt follow-ups
 - **Test hooks exist only in Studio** and start off there; live servers never have `_test`. Replaces sprint 12's always-present locked hooks.
 - **Expired regrant blocks are pruned** on every receipt and new block, so the table can't grow forever.
