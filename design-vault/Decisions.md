@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 22: test players out of RoundService
+- **Fake players live in a separate Studio-only `RoundTestPlayers` module**, plugged into RoundService through a swappable `PlayerSource`; supersedes sprint 21's `_test.addFakePlayer` inside RoundService. Keeps test code out of the production module. Specs detect warnings through a `report()` hook instead of matching log text. Alternative considered: keeping fakes in `_test`; rejected as it bloats the live module.
+
 ## 2026-11-03 — Sprint 21: fake players for multi-player specs
 - **Multi-player round specs use Studio-only fake players inside RoundService** (`_test.addFakePlayer`), since a Studio play-test has one real player. RoundService reads players through one `getPlayers()` helper so fakes go through the real loop. Alternative considered: Studio's multi-client test server; rejected as it can't run unattended. Known gap: Monster and NoiseService don't see fakes, so a real multi-player playtest is still needed.
 
