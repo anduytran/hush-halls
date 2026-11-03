@@ -2,6 +2,11 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 8: receipts without takeover
+- **Stale pending markers are never taken over.** Only the attempt holding the marker's token can replace it, which closes the double-grant gap for good. Replaces sprint 7's 180 s window. Cost accepted: a server that dies mid-purchase leaves that purchase stuck pending until fixed by hand in the DataStore.
+- **Refused or failed grants write a `released` marker** instead of deleting the key, so a stale attempt can't race a delete.
+- **Late results are always recorded**: a background loop retries the done/released write with backoff (0.5 s doubling to 30 s) until it succeeds.
+
 ## 2026-11-03 — Sprint 7: reviewer follow-ups
 - **A yielding grant handler is not cancelled.** Cancelling could double-grant or leave half-done effects. The receipt answers NotProcessedYet and keeps its marker; a late success is marked done. Handlers still must not yield. Replaces sprint 6's cancel.
 - **Stale-takeover window lowered to 180 s** (from 600 s), so a purchase whose server died is retried sooner.

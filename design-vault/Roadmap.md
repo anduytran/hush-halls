@@ -54,9 +54,13 @@ Sprint 7 (2026-11-03): six sprint-6 reviewer follow-ups (merged; scripter report
 - [x] `RoundService.cloud.spec.luau`: skips itself during a live round, and detaches/restores the real lobby platform instead of destroying it.
 - [x] Specs updated for all three files.
 
+Sprint 8 (2026-11-03): receipts, no takeover (merged; scripter reports checks pass, not run in a live round).
+- [x] Receipts: stale-pending takeover removed; any pending marker is busy until its owner (same token) replaces it. Refused/failed grants write a `released` marker that can be reserved again (no more RemoveAsync). Late handler results and failed done-writes are retried in the background until recorded. Known cost: a server dying mid-purchase leaves it stuck pending (manual DataStore fix).
+- [x] `Monetization.cloud.spec.luau` updated.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–7.
-- Run `Monetization.cloud.spec.luau` (sprint 7: yielding handler isn't stopped and is marked done later, 180 s takeover).
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–8.
+- Run `Monetization.cloud.spec.luau` (sprint 8: no takeover, `released` markers, late results always recorded).
 - Run `SpeedSampler.spec.luau` (sprint 7: teleports hold the previous reading).
 - Run `RoundService.cloud.spec.luau`: forced failure in each start step rolls back cleanly.
 - Check a failed RoundService start retries cleanly and a started system isn't restarted.
