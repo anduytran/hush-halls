@@ -1,11 +1,12 @@
 -- Engine tests for RoundService.luau. Run in a real Roblox server on the test place.
 -- Sprint-3 fix: every test starts from fresh state. beforeEach stops the loop main.server started
 -- (or the previous test's), clears the round, and starts a new one, so no live state is shared.
--- Only player-less behaviour is checked here: Running, InRound and spectator moves need real Players,
--- which a test server does not provide; those are covered by the Studio playtest.
+-- Most tests check player-less behaviour. Sprint 20: the end-to-end round test needs a real Player (a Studio
+-- play-test) and Studio's _test.setDurations; it skips itself without them.
 local RoundService = require("./RoundService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local state = ReplicatedStorage:WaitForChild("State", 10)
 assert(state and state:IsA("Folder"), "ReplicatedStorage.State missing")
@@ -51,6 +52,7 @@ end
 -- in Hall is one this spec made, and it is destroyed.
 local function resetState()
 	RoundService._test.failStep(nil)
+	RoundService._test.resetDurations()
 	RoundService.stop()
 	state:SetAttribute("RoundState", nil)
 	state:SetAttribute("TimeLeft", nil)
@@ -98,6 +100,27 @@ local function fakeJoiner()
 	return player, character, function()
 		character:Destroy()
 	end
+end
+
+-- Sprint 20: stops this instance's loop, then watches State for 1.25s without writing it. True if another
+-- RoundService instance (e.g. main.server's, when the spec got its own copy) changes RoundState or TimeLeft, or
+-- has a round under way (a player is InRound while this instance is stopped).
+local function anotherLoopRunning(): boolean
+	RoundService.stop()
+	local changed = false
+	local connection = state.AttributeChanged:Connect(function(name)
+		if name == "RoundState" or name == "TimeLeft" then
+			changed = true
+		end
+	end)
+	task.wait(1.25)
+	connection:Disconnect()
+	for _, player in Players:GetPlayers() do
+		if player:GetAttribute("InRound") == true then
+			return true
+		end
+	end
+	return changed
 end
 
 local tests = {
@@ -292,6 +315,245 @@ local tests = {
 		assert(coinsAfterReward(1.5) == 15, "CoinMultiplier 1.5 should give +15")
 		for _, bad in { 0, 0.5, -3, "2", true, 0 / 0, math.huge } do
 			assert(coinsAfterReward(bad) == 10, `CoinMultiplier {tostring(bad)} should count as 1`)
+		end
+	end,
+
+	-- Sprint 20: the duration hook is Studio only, takes seconds >= 0.5, and resetDurations() restores 15/120/5.
+	["setDurations checks its seconds and resetDurations restores the defaults"] = function()
+		local setDurations = RoundService._test.setDurations
+		if not RunService:IsStudio() then
+			assert(not pcall(setDurations, 1, 2, 1), "setDurations should error outside Studio")
+			return
+		end
+		assert(not pcall(setDurations, nil, 2, 1), "a missing lobby length should be rejected")
+		for _, bad in { 0.4, 0, -1, 0 / 0, math.huge, "1", true } do
+			assert(not pcall(setDurations, bad, 2, 1), `lobby {tostring(bad)} should be rejected`)
+			assert(not pcall(setDurations, 1, bad, 1), `running {tostring(bad)} should be rejected`)
+			assert(not pcall(setDurations, 1, 2, bad), `ended {tostring(bad)} should be rejected`)
+		end
+		local lobby, running, ended = RoundService._test.durations()
+		assert(lobby == 15 and running == 120 and ended == 5, "a rejected call should leave the defaults")
+		setDurations(0.5, 2, 1)
+		lobby, running, ended = RoundService._test.durations()
+		assert(lobby == 0.5 and running == 2 and ended == 1, `expected 0.5/2/1, got {lobby}/{running}/{ended}`)
+		RoundService._test.resetDurations()
+		lobby, running, ended = RoundService._test.durations()
+		assert(lobby == 15 and running == 120 and ended == 5, `expected 15/120/5, got {lobby}/{running}/{ended}`)
+	end,
+
+	-- Sprint 20: with the hook unused, the Lobby still counts down in whole seconds from 15.
+	["with players and default durations the Lobby counts 15, 14 a second apart"] = function()
+		if #Players:GetPlayers() == 0 then
+			return -- the Lobby only counts down with a player present
+		end
+		if anotherLoopRunning() then
+			warn("[RoundService.cloud.spec] default Lobby check skipped: another RoundService loop is writing State")
+			return
+		end
+		local lobby, running, ended = RoundService._test.durations()
+		assert(lobby == 15 and running == 120 and ended == 5, `expected 15/120/5, got {lobby}/{running}/{ended}`)
+		RoundService.start()
+		assert(state:GetAttribute("TimeLeft") == 15, `expected TimeLeft 15, got {state:GetAttribute("TimeLeft")}`)
+		task.wait(0.9)
+		assert(
+			state:GetAttribute("TimeLeft") == 15,
+			`expected TimeLeft 15 before a second, got {state:GetAttribute("TimeLeft")}`
+		)
+		task.wait(0.3)
+		assert(
+			state:GetAttribute("TimeLeft") == 14,
+			`expected TimeLeft 14 after a second, got {state:GetAttribute("TimeLeft")}`
+		)
+		assert(state:GetAttribute("RoundState") == "Lobby", "expected Lobby")
+	end,
+
+	-- Sprint 20: end-to-end smoke of one round with durations 1/2/1. Samples State and every present player each
+	-- frame from the first Lobby to the next one. Mid-Running it marks everyone Escaped (as Exit.Touched would),
+	-- which also ends Running early, so the next round's spawn has an Escaped flag to clear. RoundService clears
+	-- Escaped when that Lobby's countdown ends, while RoundState is still Lobby.
+	["one full round with durations 1/2/1: states, timer, water, InRound and Escaped"] = function()
+		local players = Players:GetPlayers()
+		if #players == 0 then
+			warn("[RoundService.cloud.spec] round smoke skipped: it needs a player (Studio play-test)")
+			return
+		end
+		if not RunService:IsStudio() then
+			warn("[RoundService.cloud.spec] round smoke skipped: _test.setDurations is Studio only")
+			return
+		end
+		if anotherLoopRunning() then
+			warn("[RoundService.cloud.spec] round smoke skipped: another RoundService loop is writing State")
+			return
+		end
+		-- NoiseService (started by main.server) makes Workspace.Water and resets WaterLevel on Lobby and Running.
+		local noiseRunning = workspace:FindFirstChild("Water") ~= nil
+		if not noiseRunning then
+			warn("[RoundService.cloud.spec] round smoke: NoiseService isn't running, so the water reset isn't checked")
+		end
+
+		RoundService._test.setDurations(1, 2, 1)
+		RoundService.start()
+
+		type Sample = {
+			roundState: any,
+			timeLeft: any,
+			water: number,
+			afterEscape: boolean,
+			inRound: { [Player]: any },
+			escaped: { [Player]: any },
+		}
+		local samples: { Sample } = {}
+		local phases: { any } = {}
+		local escapeMarked = false
+		local deadline = os.clock() + 30
+		while os.clock() < deadline do
+			local sample: Sample = {
+				roundState = state:GetAttribute("RoundState"),
+				timeLeft = state:GetAttribute("TimeLeft"),
+				water = state:GetAttribute("WaterLevel") :: number? or 0,
+				afterEscape = escapeMarked,
+				inRound = {},
+				escaped = {},
+			}
+			local escapedCleared = true
+			for _, player in players do
+				if player.Parent == Players then
+					sample.inRound[player] = player:GetAttribute("InRound")
+					sample.escaped[player] = player:GetAttribute("Escaped")
+					if sample.escaped[player] ~= false then
+						escapedCleared = false
+					end
+				end
+			end
+			table.insert(samples, sample)
+			if phases[#phases] ~= sample.roundState then
+				table.insert(phases, sample.roundState)
+			end
+			if #phases > 4 or (#phases == 4 and escapeMarked and escapedCleared) then
+				break
+			end
+			if sample.roundState == "Running" and sample.timeLeft == 1 and not escapeMarked then
+				-- Same attributes as Exit.Touched sets. With NoiseService running, the water is also raised as
+				-- noise would, so the next Lobby has a level to reset.
+				escapeMarked = true
+				for _, player in players do
+					if player.Parent == Players then
+						player:SetAttribute("Escaped", true)
+						player:SetAttribute("InRound", false)
+					end
+				end
+				if noiseRunning and sample.water == 0 then
+					state:SetAttribute("WaterLevel", 1)
+				end
+			end
+			RunService.Heartbeat:Wait()
+		end
+
+		-- RoundState: Lobby -> Running -> Ended -> Lobby, and nothing else.
+		local names = {}
+		for _, phase in phases do
+			table.insert(names, tostring(phase))
+		end
+		local order = table.concat(names, " -> ")
+		assert(
+			order == "Lobby -> Running -> Ended -> Lobby",
+			`expected Lobby -> Running -> Ended -> Lobby, got {order}`
+		)
+		assert(escapeMarked, "Running never showed TimeLeft 1, so the escape was never marked")
+
+		-- Split the samples into the four phases.
+		local segments: { { Sample } } = {}
+		for _, sample in samples do
+			local last = segments[#segments]
+			if not last or last[1].roundState ~= sample.roundState then
+				table.insert(segments, { sample })
+			else
+				table.insert(last, sample)
+			end
+		end
+		local lobby1, running, ended, lobby2 = segments[1], segments[2], segments[3], segments[4]
+
+		-- TimeLeft counts down inside each phase and starts at that phase's length.
+		local function timesOf(segment: { Sample }): string
+			local seen = {}
+			for _, sample in segment do
+				if seen[#seen] ~= tostring(sample.timeLeft) then
+					table.insert(seen, tostring(sample.timeLeft))
+				end
+			end
+			return table.concat(seen, ",")
+		end
+		for index, segment in segments do
+			for i = 2, #segment do
+				local before, now = segment[i - 1].timeLeft, segment[i].timeLeft
+				assert(
+					type(before) == "number" and type(now) == "number" and now <= before,
+					`TimeLeft went up in phase {index} ({segment[1].roundState}): {timesOf(segment)}`
+				)
+			end
+		end
+		assert(timesOf(lobby1) == "1,0", `first Lobby TimeLeft should go 1,0, got {timesOf(lobby1)}`)
+		local runTimes = timesOf(running)
+		assert(string.sub(runTimes, 1, 3) == "2,1", `Running TimeLeft should start 2,1, got {runTimes}`)
+		assert(timesOf(ended) == "1", `Ended TimeLeft should be 1, got {timesOf(ended)}`)
+		assert(lobby2[1].timeLeft == 1, `the next Lobby should start at TimeLeft 1, got {tostring(lobby2[1].timeLeft)}`)
+
+		-- WaterLevel never rises outside Running, and is 0 by the end of each Lobby.
+		for i = 2, #samples do
+			local before, now = samples[i - 1], samples[i]
+			if before.roundState ~= "Running" and now.roundState ~= "Running" then
+				assert(
+					now.water <= before.water + 1e-6,
+					`WaterLevel rose from {before.water} to {now.water} during {tostring(now.roundState)}`
+				)
+			end
+		end
+		assert(lobby1[#lobby1].water == 0, `WaterLevel should be 0 in Lobby, got {lobby1[#lobby1].water}`)
+		local final = samples[#samples]
+		if noiseRunning then
+			assert(ended[#ended].water > 0, "the water raised while Running should still be up in Ended")
+		end
+		assert(final.water == 0, `WaterLevel should reset by the next Lobby, got {final.water}`)
+
+		-- InRound: true for every present player all through Running until they escape; false in Ended and the
+		-- next Lobby's countdown (the next round's spawn sets it again once that countdown ends).
+		for _, sample in running do
+			if not sample.afterEscape then
+				for player, inRound in sample.inRound do
+					assert(inRound == true, `{player.Name} should be InRound while Running, was {tostring(inRound)}`)
+				end
+			end
+		end
+		for _, segment in { ended, lobby2 } do
+			for _, sample in segment do
+				if sample.timeLeft ~= 0 then
+					for player, inRound in sample.inRound do
+						assert(
+							inRound == false,
+							`{player.Name} should not be InRound during {tostring(sample.roundState)}, was {tostring(
+								inRound
+							)}`
+						)
+					end
+				end
+			end
+		end
+
+		-- Escaped: still true through Ended, then cleared before the next round leaves Lobby.
+		for _, sample in ended do
+			for player, escaped in sample.escaped do
+				assert(escaped == true, `{player.Name} should still be Escaped during Ended, was {tostring(escaped)}`)
+			end
+		end
+		assert(
+			final.roundState == "Lobby",
+			`Escaped should be cleared while still in Lobby, got {tostring(final.roundState)}`
+		)
+		for player, escaped in final.escaped do
+			assert(
+				escaped == false,
+				`{player.Name} should have Escaped cleared at the next Lobby, was {tostring(escaped)}`
+			)
 		end
 	end,
 }

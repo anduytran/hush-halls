@@ -1,10 +1,12 @@
 --!strict
--- Round loop: Lobby (15s) -> Running (up to 120s) -> Ended (5s) -> Lobby.
+-- Round loop: Lobby (15s) -> Running (up to 120s) -> Ended (5s) -> Lobby. Studio specs can shorten these
+-- with RoundService._test.setDurations.
 -- Players who touch Hall.Exit while Running escape: +10 Coins and a teleport to the lobby platform above Start.
 -- Player attribute InRound is true while a participant is alive and hasn't escaped; Monster and NoiseService
 -- only hear, kill and drown InRound players.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local GameState = require(ReplicatedStorage.Shared.GameState)
 
@@ -18,6 +20,7 @@ local LOAD_ATTEMPTS = 3
 local LOAD_RETRY_DELAY = 1
 local SPAWN_TIMEOUT = 10
 local HALL_TIMEOUT = 10 -- how long start() waits for Hall.Start and Hall.Exit
+local MIN_TEST_DURATION = 0.5
 
 local RoundService = {}
 
@@ -38,6 +41,11 @@ local loop: thread? = nil
 local generation = 0
 -- Where spectators and escaped players wait; set by start().
 local platform: BasePart? = nil
+-- Phase lengths in seconds. Always the constants above, unless a Studio spec calls _test.setDurations.
+-- Each phase reads its length when it begins.
+local lobbyTime: number = LOBBY_TIME
+local runTime: number = RUN_TIME
+local endedTime: number = ENDED_TIME
 
 local function setupLeaderstats(player: Player)
 	if player:FindFirstChild("leaderstats") then
@@ -281,11 +289,13 @@ function RoundService.start()
 			while true do
 				-- Lobby: wait for at least one player, then count down.
 				State:SetAttribute("RoundState", "Lobby")
-				local left = LOBBY_TIME
+				local lobbyLength = lobbyTime
+				local left = lobbyLength
 				while left > 0 do
-					State:SetAttribute("TimeLeft", left)
-					task.wait(1)
-					left = if #Players:GetPlayers() > 0 then left - 1 else LOBBY_TIME
+					State:SetAttribute("TimeLeft", math.ceil(left))
+					local pause = math.min(1, left)
+					task.wait(pause)
+					left = if #Players:GetPlayers() > 0 then left - pause else lobbyLength
 				end
 				State:SetAttribute("TimeLeft", 0)
 
@@ -325,8 +335,9 @@ function RoundService.start()
 
 				-- Running
 				State:SetAttribute("RoundState", "Running")
-				local endTime = os.clock() + RUN_TIME
-				State:SetAttribute("TimeLeft", RUN_TIME)
+				local runLength = runTime
+				local endTime = os.clock() + runLength
+				State:SetAttribute("TimeLeft", math.ceil(runLength))
 				while os.clock() < endTime do
 					task.wait(TICK)
 					State:SetAttribute("TimeLeft", math.max(0, math.ceil(endTime - os.clock())))
@@ -340,9 +351,12 @@ function RoundService.start()
 				for _, player in Players:GetPlayers() do
 					player:SetAttribute("InRound", false)
 				end
-				for endLeft = ENDED_TIME, 1, -1 do
-					State:SetAttribute("TimeLeft", endLeft)
-					task.wait(1)
+				local endLeft = endedTime
+				while endLeft > 0 do
+					State:SetAttribute("TimeLeft", math.ceil(endLeft))
+					local pause = math.min(1, endLeft)
+					task.wait(pause)
+					endLeft -= pause
 				end
 				table.clear(participants)
 				table.clear(dead)
@@ -395,6 +409,34 @@ RoundService._test = {
 	end,
 	addCoins = function(player: Player, amount: number)
 		addCoins(player, amount)
+	end,
+	-- Sprint 20: Studio only. Sets the Lobby, Running and Ended lengths (seconds, each >= 0.5) the loop uses from
+	-- the next phase that begins; a phase already under way keeps its length. resetDurations() undoes it.
+	setDurations = function(lobby: number, running: number, ended: number)
+		if not RunService:IsStudio() then
+			error("RoundService._test.setDurations only works in Studio", 2)
+		end
+		-- Each argument is checked on its own: a nil in a table constructor would be skipped.
+		local function check(name: string, seconds: unknown)
+			if
+				type(seconds) ~= "number"
+				or seconds ~= seconds
+				or seconds < MIN_TEST_DURATION
+				or seconds == math.huge
+			then
+				error(`RoundService._test.setDurations: {name} {tostring(seconds)} isn't a number of seconds >= 0.5`, 3)
+			end
+		end
+		check("lobby", lobby)
+		check("running", running)
+		check("ended", ended)
+		lobbyTime, runTime, endedTime = lobby, running, ended
+	end,
+	resetDurations = function()
+		lobbyTime, runTime, endedTime = LOBBY_TIME, RUN_TIME, ENDED_TIME
+	end,
+	durations = function(): (number, number, number)
+		return lobbyTime, runTime, endedTime
 	end,
 }
 
