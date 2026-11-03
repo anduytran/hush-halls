@@ -16,15 +16,25 @@
 -- `hooks.setClock` / `hooks.setWarn`.
 -- Sprint-12 fix: `_test` exists everywhere and is wired in Studio or by `hooks.enable()`, so every test runs on any
 -- runner, Studio or not. The spec checks the unwired state first (outside Studio), then enables the hooks.
+-- Sprint-13 fix (replaces sprint 12's): `_test` only exists in Studio, so a live server never exposes it. Outside
+-- Studio the spec runs one test, that the hooks are absent. In Studio the hooks start off; every test turns them on
+-- before it runs and puts them back as they were afterwards (see the wrapper at the end), never for good at load.
 local RunService = game:GetService("RunService")
 local Monetization = require("./Monetization")
 local hooks = Monetization._test
 local Decision = Enum.ProductPurchaseDecision
 
+if not RunService:IsStudio() then
+	return {
+		["test hooks are absent outside Studio"] = function()
+			assert(Monetization._test == nil, "_test must not exist outside Studio")
+			assert(Monetization._processReceipt == nil, "_processReceipt must not exist")
+		end,
+	}
+end
+
 local wiredAtLoad = hooks.enabled()
-local unwiredCallFails = not pcall(hooks.inFlight)
-hooks.enable()
-local processReceipt = hooks.processReceipt
+local processReceipt = hooks.processReceipt -- a wired function: it checks at call time, so this is safe at load
 
 local buyer = { Name = "Tester", UserId = 1 }
 
@@ -263,20 +273,32 @@ end
 
 -- Sprint-12 fix: makes the next `failures` UpdateAsync writes whose stored value has `status` throw, like a failed
 -- DataStore call. Every write is counted by the status it would store (`state.seen`), failed or not.
+-- Sprint-13 fix: the transform runs only inside the real UpdateAsync, exactly as often as without this helper. A
+-- write chosen to fail stores nothing (the wrapped transform returns nil), then the call throws.
 local function failWrites(store, status: string, failures: number)
-	local state = { failures = failures, seen = {} }
+	local state = { failures = failures, seen = {}, transformRuns = 0 }
 	local realUpdate = store.UpdateAsync
 	function store:UpdateAsync(k, transform)
-		local probe = transform(self.data[k])
-		if type(probe) == "table" and type(probe.status) == "string" then
-			state.seen[probe.status] = (state.seen[probe.status] or 0) + 1
-			if probe.status == status and state.failures > 0 then
-				state.failures -= 1
-				self.calls += 1
-				error(`simulated {status} write failure`)
+		local writing: string? = nil
+		local fail = false
+		local result = realUpdate(self, k, function(value)
+			state.transformRuns += 1
+			local out = transform(value)
+			writing = if type(out) == "table" and type(out.status) == "string" then out.status else nil
+			fail = writing == status and state.failures > 0
+			if fail then
+				return nil -- a failed call writes nothing
 			end
+			return out
+		end)
+		if writing then
+			state.seen[writing] = (state.seen[writing] or 0) + 1
 		end
-		return realUpdate(self, k, transform)
+		if fail then
+			state.failures -= 1
+			error(`simulated {status} write failure`)
+		end
+		return result
 	end
 	return state
 end
@@ -782,16 +804,21 @@ local tests = {
 		assert(otherCounter.calls == 1, `another receipt should grant once, granted {otherCounter.calls} times`)
 	end,
 
-	-- Sprint-12 fix: one `_test` table everywhere, wired at load only in Studio, by `enable()` otherwise. The old
-	-- Studio-only surface is gone. The clock and warn swap through setClock / setWarn.
-	["test hooks: one _test table, wired in Studio or by enable()"] = function()
+	-- Sprint-12 fix: the old Studio-only surface is gone. The clock and warn swap through setClock / setWarn.
+	-- Sprint-13 fix: `_test` exists only in Studio, starts off, and is turned on and off by enable() / disable().
+	["test hooks: Studio only, off at load, on only between enable() and disable()"] = function()
 		assert(Monetization._processReceipt == nil, "_processReceipt should be gone (use _test.processReceipt)")
 		assert(Monetization._RETRY_FIRST == nil, "_RETRY_FIRST should be gone (use _test.RETRY_FIRST)")
-		assert(wiredAtLoad == RunService:IsStudio(), `wired at load should match IsStudio(), was {wiredAtLoad}`)
-		if not wiredAtLoad then
-			assert(unwiredCallFails, "an unwired _test function must error")
-		end
-		assert(hooks.enabled(), "enable() should wire the hooks")
+		assert(RunService:IsStudio(), "_test should only be reachable in Studio")
+		assert(not wiredAtLoad, "the hooks must start off, even in Studio")
+		assert(hooks.enabled(), "the test wrapper should have enabled the hooks")
+		hooks.disable()
+		local offCallFails = not pcall(hooks.inFlight)
+		local offAfterDisable = not hooks.enabled()
+		hooks.enable()
+		assert(offCallFails, "a _test function must error while the hooks are off")
+		assert(offAfterDisable, "disable() should turn the hooks off")
+		assert(pcall(hooks.inFlight), "a _test function should work once enabled again")
 		assert(
 			type(hooks.setClock) == "function" and type(hooks.setWarn) == "function",
 			"setClock and setWarn must exist"
@@ -1429,13 +1456,19 @@ end
 
 -- Sprint-9 fix: every test runs on a fresh fake clock, which is put back afterwards, and must not leave any
 -- write or grant in flight.
-for name, test in tests do
-	tests[name] = function()
+-- Sprint-13 fix: each test also turns the hooks on first and puts them back as they were afterwards.
+local function wrapTest(test)
+	return function()
+		local wasEnabled = hooks.enabled()
+		hooks.enable()
 		installFakeClock()
 		local inFlightBefore = hooks.inFlight()
 		local ok, err = pcall(test)
 		local inFlightAfter = hooks.inFlight()
 		restoreClock()
+		if not wasEnabled then
+			hooks.disable()
+		end
 		if not ok then
 			error(err, 0)
 		end
@@ -1444,6 +1477,118 @@ for name, test in tests do
 			`the test left {inFlightAfter - inFlightBefore} write(s) or grant(s) in flight`
 		)
 	end
+end
+
+-- Sprint-13 fix: the reviewer's sprint-12 notes.
+local sprint13 = {
+	-- Sprint-13 fix: a late done write that finds another attempt's marker writes nothing and keeps the block (the
+	-- product may have been given), so a redelivery here is neither granted nor reserved.
+	["a late done write that meets another attempt's marker keeps the block"] = function()
+		local store = newStore()
+		local r = receipt("late-meets-other")
+		local key = keyOf(r)
+		local first, firstGrant = lateGrant(true)
+		assertDecision(processReceipt(r, store, firstGrant, buyer), Decision.NotProcessedYet, "yielding handler")
+		local token = store.data[key].token
+		fake.advance(hooks.MAX_HEARTBEAT_AGE)
+		local entry = hooks.gaveUp(key)
+		assert(entry and entry.status == "done" and entry.token == token, "the cap should block the receipt as done")
+		-- Another server takes the receipt over (its marker replaces ours) before our grant finishes.
+		local other = { status = "pending", at = fake.t, token = "other" }
+		store.data[key] = other
+		first.finish()
+		assert(store.data[key] == other, "the late done write must leave the other attempt's marker alone")
+		assert(
+			fake.warned("doesn't hold our marker"),
+			`expected a "doesn't hold our marker" warning; got:\n{table.concat(fake.warns, "\n")}`
+		)
+		local after = hooks.gaveUp(key)
+		assert(
+			after and after.status == "done" and after.token == token and after.at == entry.at,
+			"the block must stay, unchanged, after the write found another attempt's marker"
+		)
+		local retry, retryGrant = countingGrant(store, key)
+		local calls = store.calls
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.NotProcessedYet, "redelivery")
+		assert(retry.calls == 0, `a blocked receipt must not be granted, granted {retry.calls} times`)
+		assert(store.calls == calls, `a blocked receipt must not be reserved, saw {store.calls - calls} calls`)
+		assert(first.calls == 1, `the first grant should run once, ran {first.calls} times`)
+	end,
+
+	-- Sprint-13 fix: an expired block is pruned when any other receipt is processed; it doesn't wait for its own
+	-- receipt to come back. Blocks that haven't expired stay.
+	["expired blocks are pruned without their own receipt being redelivered"] = function()
+		local store = newStore()
+		local old = receipt("prune-old")
+		local oldKey = keyOf(old)
+		local first, firstGrant = lateGrant(true)
+		assertDecision(processReceipt(old, store, firstGrant, buyer), Decision.NotProcessedYet, "yielding handler")
+		fake.advance(hooks.MAX_HEARTBEAT_AGE)
+		local entry = hooks.gaveUp(oldKey)
+		assert(entry, "the cap should block the old receipt")
+		-- A second receipt is blocked later, so it hasn't expired when the first one has.
+		local young = receipt("prune-young")
+		local youngKey = keyOf(young)
+		local second, secondGrant = lateGrant(true)
+		assertDecision(processReceipt(young, store, secondGrant, buyer), Decision.NotProcessedYet, "second yielder")
+		fake.advance(hooks.MAX_HEARTBEAT_AGE)
+		assert(hooks.gaveUp(youngKey), "the cap should block the second receipt")
+		fake.t = entry.at + hooks.GAVE_UP_TTL + 1
+		local unrelated = receipt("prune-unrelated")
+		local counter, grant = countingGrant(store, keyOf(unrelated))
+		assertDecision(processReceipt(unrelated, store, grant, buyer), Decision.PurchaseGranted, "unrelated receipt")
+		assert(counter.calls == 1, `the unrelated receipt should grant once, granted {counter.calls} times`)
+		assert(hooks.gaveUp(oldKey) == nil, "the expired block should be pruned by another receipt")
+		assert(hooks.gaveUp(youngKey) ~= nil, "a block that hasn't expired must stay")
+		first.finish()
+		second.finish()
+		assert(statusOf(store, oldKey) == "done" and statusOf(store, youngKey) == "done", "both should end up done")
+	end,
+
+	-- Sprint-13 fix: failWrites runs the transform exactly as often as the store would without it.
+	["failWrites never runs the transform an extra time"] = function()
+		local store = newStore()
+		local r = receipt("failwrites-runs")
+		local key = keyOf(r)
+		local state = failWrites(store, "done", 1)
+		local counter, grant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "mark-done fails once")
+		assert(counter.calls == 1, `expected 1 grant, got {counter.calls}`)
+		-- Reserve, failed mark-done, background mark-done: three calls, one transform run each.
+		assert(store.calls == 3, `expected 3 UpdateAsync calls, saw {store.calls}`)
+		assert(store.runs == 3, `expected 3 callback runs, saw {store.runs}`)
+		assert(state.transformRuns == 3, `expected 3 transform runs, saw {state.transformRuns}`)
+		assert(state.failures == 0 and state.seen.done == 2, "one failed and one landed done write")
+		assert(statusOf(store, key) == "done", `expected done, got {tostring(statusOf(store, key))}`)
+	end,
+
+	-- Sprint-13 fix: the wrapper turns the hooks on for a test only, and back off afterwards.
+	["each test turns the hooks on only while it runs"] = function()
+		assert(hooks.enabled(), "the hooks should be on during a test")
+		assert(not wiredAtLoad, "loading the spec must not leave the hooks on")
+	end,
+
+	-- Sprint-13 fix: a wrapped test that starts with the hooks off puts them back off when it finishes.
+	["the wrapper puts the hooks back off after a test that started with them off"] = function()
+		hooks.disable()
+		local seen = nil
+		local probe = wrapTest(function()
+			seen = hooks.enabled()
+		end)
+		local ok, err = pcall(probe)
+		local after = hooks.enabled()
+		hooks.enable() -- the outer wrapper expects the hooks on while this test runs
+		assert(ok, err)
+		assert(seen == true, "the hooks should be on while the wrapped test runs")
+		assert(not after, "the wrapper must put the hooks back off afterwards")
+	end,
+}
+for name, test in sprint13 do
+	tests[name] = test
+end
+
+for name, test in tests do
+	tests[name] = wrapTest(test)
 end
 
 return tests

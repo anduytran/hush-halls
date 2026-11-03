@@ -26,6 +26,8 @@
 -- Sprint-12 fix: only a given-up "done" blocks (a given-up "released" gave nothing). The heartbeat cap counts from
 -- the attempt's reserve, one MAX_HEARTBEAT_AGE window shared by the grant and its result write; if the cap is hit
 -- while the grant runs or its done write is pending, the receipt is blocked too. Blocks expire after GAVE_UP_TTL.
+-- Sprint-13 fix: expired blocks are pruned on every receipt; `_test` only exists in Studio; the double grant still
+-- possible after the cap is a documented known limit (see startHeartbeat).
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
@@ -52,6 +54,7 @@ local HEARTBEAT = 60
 -- Sprint-11 fix: a heartbeat refreshes for at most this many seconds in total, then stops (with one warn).
 local MAX_HEARTBEAT_AGE = 1800
 -- Sprint-12 fix: a gaveUp entry blocks its receipt for this many seconds after it was recorded, then expires.
+-- Sprint-13 fix: it only covers this server; see the known limit at startHeartbeat.
 local GAVE_UP_TTL = STALE_PENDING + MAX_HEARTBEAT_AGE
 
 type Clock = {
@@ -110,8 +113,20 @@ local inFlight = 0
 -- Sprint-12 fix: only for a "done" result (or a grant still running at the heartbeat cap), and for GAVE_UP_TTL.
 local gaveUp: { [string]: GaveUp } = {}
 
+-- Sprint-13 fix: drops every block older than GAVE_UP_TTL. Runs on every receipt and every new block, so expired
+-- entries don't pile up waiting for their own receipt to be redelivered.
+local function pruneGaveUp()
+	local now = clock.now()
+	for key, entry in gaveUp do
+		if now - entry.at > GAVE_UP_TTL then
+			gaveUp[key] = nil
+		end
+	end
+end
+
 -- Sprint-12 fix: blocks this attempt's receipt on this server. Keeps the first time recorded, so it can't be extended.
 local function recordGaveUp(attempt: Attempt)
+	pruneGaveUp() -- Sprint-13 fix
 	local entry = gaveUp[attempt.key]
 	if entry and entry.token == attempt.token then
 		return
@@ -270,6 +285,12 @@ end
 -- it started. The marker then goes stale STALE_PENDING after its last refresh, like a dead server's.
 -- Sprint-12 fix: the window counts from the attempt's reserve, so the grant's heartbeat and keepWriting's share one
 -- MAX_HEARTBEAT_AGE window per attempt. When the cap is hit (or already was), it calls `onCap`.
+-- Sprint-13 fix: KNOWN LIMIT, a double grant after the cap. Once the heartbeat stops, the marker goes stale
+-- STALE_PENDING after its last refresh. Then any other server (which has no gaveUp entry) may reserve and grant the
+-- receipt, and so may this server once GAVE_UP_TTL has passed, while our grant may still give the product (or
+-- already has, with its done write lost). Closing this needs a store change: a capped marker that never goes stale
+-- (a "maybe given" status every server respects), which would leave a dead server's purchase stuck for good instead.
+-- We accept the window: it needs a handler that yields 30+ minutes, or a done write lost for good, then 24 h more.
 local function startHeartbeat(attempt: Attempt, onCap: () -> ()): () -> ()
 	local beating = true
 	local function overCap(): boolean
@@ -334,6 +355,8 @@ local function keepWriting(attempt: Attempt, final: any)
 			if wasOurs then
 				clearGaveUp(attempt) -- Sprint-12 fix: the store holds our result now
 			else
+				-- Sprint-13 fix: any block stays on purpose. Our grant may have given the product, and another attempt
+				-- now owns the receipt, so this server must not grant it again (until GAVE_UP_TTL).
 				log.warn(`[Monetization] purchase {attempt.purchaseId} doesn't hold our marker; wrote nothing`)
 			end
 			break
@@ -423,10 +446,10 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	local purchaseId = receipt.PurchaseId
 	-- Sprint-11 fix: we gave up writing this receipt's result, so it may already be given: never grant it again here.
 	-- Sprint-12 fix: only a "done" give-up blocks, and only until GAVE_UP_TTL after it was recorded.
+	-- Sprint-13 fix: expired blocks (this receipt's or any other's) are pruned first.
+	pruneGaveUp()
 	local blocked = gaveUp[receiptKey]
-	if blocked and clock.now() - blocked.at > GAVE_UP_TTL then
-		gaveUp[receiptKey] = nil
-	elseif blocked and blocked.status == "done" then
+	if blocked and blocked.status == "done" then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 	local token = HttpService:GenerateGUID(false)
@@ -558,66 +581,72 @@ end)
 
 -- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync, GetAsync) and handler on a fake
 -- clock, and read the limits and in-flight count. `_test` is frozen.
--- Sprint-12 fix: `_test` exists everywhere (the Studio-only `_processReceipt` / `_RETRY_FIRST` are gone), so the
--- spec runs on any test runner. Its functions only work once wired: in Studio, or after `_test.enable()`; unwired
--- they error, so a live server never runs them by accident. The limits can always be read.
-local testWired = RunService:IsStudio()
-local function wired(name: string, fn: any): any
-	return function(...)
-		if not testWired then
-			error(`[Monetization] _test.{name} is off outside Studio; call Monetization._test.enable() first`, 2)
+-- Sprint-12 fix: the Studio-only `_processReceipt` / `_RETRY_FIRST` are gone; everything is under `_test`.
+-- Sprint-13 fix: `_test` only exists in Studio (RunService:IsStudio()), so a live server never exposes it, not even
+-- `enable()`. Even in Studio its functions error until a spec calls `_test.enable()`, and `_test.disable()` turns
+-- them off again (the spec does both around every test). The limits can always be read.
+if RunService:IsStudio() then
+	local testWired = false
+	local function wired(name: string, fn: any): any
+		return function(...)
+			if not testWired then
+				error(`[Monetization] _test.{name} is off; call Monetization._test.enable() first`, 2)
+			end
+			return fn(...)
 		end
-		return fn(...)
 	end
+	Monetization._test = table.freeze({
+		enable = function()
+			testWired = true
+		end,
+		disable = function()
+			testWired = false
+		end,
+		enabled = function(): boolean
+			return testWired
+		end,
+		RETRY_FIRST = RETRY_FIRST,
+		STALE_PENDING = STALE_PENDING,
+		MAX_RETRIES = MAX_RETRIES,
+		SHUTDOWN_WAIT = SHUTDOWN_WAIT,
+		HEARTBEAT = HEARTBEAT,
+		MAX_HEARTBEAT_AGE = MAX_HEARTBEAT_AGE,
+		GAVE_UP_TTL = GAVE_UP_TTL,
+		processReceipt = wired("processReceipt", processReceipt),
+		passHandlers = wired("passHandlers", function()
+			return passHandlers
+		end),
+		productHandlers = wired("productHandlers", function()
+			return productHandlers
+		end),
+		drain = wired("drain", drain),
+		inFlight = wired("inFlight", function(): number
+			return inFlight
+		end),
+		-- Replaces the clock's now/wait/delay with the given ones (missing ones are the real ones); `nil` puts the real
+		-- clock back.
+		setClock = wired(
+			"setClock",
+			function(fake: { now: (() -> number)?, wait: ((number) -> ())?, delay: ((number, () -> ()) -> ())? }?)
+				clock.now = (fake and fake.now) or realClock.now
+				clock.wait = (fake and fake.wait) or realClock.wait
+				clock.delay = (fake and fake.delay) or realClock.delay
+			end
+		),
+		-- Replaces where warnings go; `nil` puts the real warn back.
+		setWarn = wired("setWarn", function(fakeWarn: ((string) -> ())?)
+			log.warn = fakeWarn or realWarn
+		end),
+		-- A copy of the block on `receiptKey` ({status, token, at}), if any, and a reset for specs.
+		gaveUp = wired("gaveUp", function(receiptKey: string): GaveUp?
+			local entry = gaveUp[receiptKey]
+			return if entry then table.clone(entry) else nil
+		end),
+		clearGaveUp = wired("clearGaveUp", function()
+			table.clear(gaveUp)
+		end),
+	})
 end
-Monetization._test = table.freeze({
-	enable = function()
-		testWired = true
-	end,
-	enabled = function(): boolean
-		return testWired
-	end,
-	RETRY_FIRST = RETRY_FIRST,
-	STALE_PENDING = STALE_PENDING,
-	MAX_RETRIES = MAX_RETRIES,
-	SHUTDOWN_WAIT = SHUTDOWN_WAIT,
-	HEARTBEAT = HEARTBEAT,
-	MAX_HEARTBEAT_AGE = MAX_HEARTBEAT_AGE,
-	GAVE_UP_TTL = GAVE_UP_TTL,
-	processReceipt = wired("processReceipt", processReceipt),
-	passHandlers = wired("passHandlers", function()
-		return passHandlers
-	end),
-	productHandlers = wired("productHandlers", function()
-		return productHandlers
-	end),
-	drain = wired("drain", drain),
-	inFlight = wired("inFlight", function(): number
-		return inFlight
-	end),
-	-- Replaces the clock's now/wait/delay with the given ones (missing ones are the real ones); `nil` puts the real
-	-- clock back.
-	setClock = wired(
-		"setClock",
-		function(fake: { now: (() -> number)?, wait: ((number) -> ())?, delay: ((number, () -> ()) -> ())? }?)
-			clock.now = (fake and fake.now) or realClock.now
-			clock.wait = (fake and fake.wait) or realClock.wait
-			clock.delay = (fake and fake.delay) or realClock.delay
-		end
-	),
-	-- Replaces where warnings go; `nil` puts the real warn back.
-	setWarn = wired("setWarn", function(fakeWarn: ((string) -> ())?)
-		log.warn = fakeWarn or realWarn
-	end),
-	-- A copy of the block on `receiptKey` ({status, token, at}), if any, and a reset for specs.
-	gaveUp = wired("gaveUp", function(receiptKey: string): GaveUp?
-		local entry = gaveUp[receiptKey]
-		return if entry then table.clone(entry) else nil
-	end),
-	clearGaveUp = wired("clearGaveUp", function()
-		table.clear(gaveUp)
-	end),
-})
 
 MarketplaceService.ProcessReceipt = function(receipt)
 	local key = keyFor(Products.Products, receipt.ProductId)
