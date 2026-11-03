@@ -9,6 +9,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GameState = require(ReplicatedStorage.Shared.GameState)
+local SpeedSampler = require(script.Parent.SpeedSampler)
 
 local WALK_SPEED = 10
 local SPRINT_SPEED = 24
@@ -19,7 +20,6 @@ local IDLE_SPEED = 0.5 -- below this horizontal speed counts as silent
 local SNEAK_NOISE = 0.1 -- noise at full walk speed
 local SPRINT_RATE_LIMIT = 10 -- Sprint events per second per player
 local DEFAULT_FLOOR_SIZE = Vector3.new(200, 1, 200)
-local MAX_PLAUSIBLE_SPEED = 60 -- faster than this between steps is a teleport, not footsteps
 
 local NoiseService = {}
 
@@ -29,7 +29,9 @@ local started = false
 local sprinting: { [Player]: boolean } = {}
 local sprintBudget: { [Player]: { tokens: number, last: number } } = {}
 local underwaterSince: { [Player]: number } = {}
-local lastPosition: { [Player]: { root: BasePart, position: Vector3 } } = {}
+-- Sprint-3 fix: the teleport filter now only skips a single step longer than 40 studs (SpeedSampler.MAX_STEP),
+-- instead of zeroing anyone measured above 60 studs/s, so sprinting players stay audible. Same averaging as Monster.
+local sampler = SpeedSampler.new()
 
 local function allowSprintEvent(player: Player): boolean
 	local now = os.clock()
@@ -122,19 +124,6 @@ local function insideFootprint(position: Vector3): boolean
 	return math.abs(position.X - center.X) <= size.X / 2 and math.abs(position.Z - center.Z) <= size.Z / 2
 end
 
--- Horizontal speed since the last step, from where the server sees the character.
-local function measureSpeed(player: Player, root: BasePart, dt: number): number
-	local position = root.Position
-	local previous = lastPosition[player]
-	lastPosition[player] = { root = root, position = position }
-	if not previous or previous.root ~= root or dt <= 0 then
-		return 0
-	end
-	local delta = position - previous.position
-	local speed = Vector2.new(delta.X, delta.Z).Magnitude / dt
-	return if speed > MAX_PLAUSIBLE_SPEED then 0 else speed
-end
-
 local function updateWater(water: Part)
 	local floor = getFloor()
 	local level = State:GetAttribute("WaterLevel") :: number? or 0
@@ -158,9 +147,9 @@ local function step(water: Part, dt: number)
 	for _, player in Players:GetPlayers() do
 		local humanoid, root = getHumanoid(player)
 		if humanoid and root and humanoid.Health > 0 then
-			loudest = math.max(loudest, noiseFromSpeed(measureSpeed(player, root, dt)))
+			loudest = math.max(loudest, noiseFromSpeed(sampler.update(player, root, root.Position, now)))
 		else
-			lastPosition[player] = nil
+			sampler.forget(player)
 		end
 	end
 	State:SetAttribute("Noise", loudest)
@@ -230,7 +219,7 @@ function NoiseService.start()
 		sprinting[player] = nil
 		sprintBudget[player] = nil
 		underwaterSince[player] = nil
-		lastPosition[player] = nil
+		sampler.forget(player)
 	end)
 
 	State:GetAttributeChangedSignal("RoundState"):Connect(function()

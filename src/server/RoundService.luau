@@ -7,7 +7,6 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GameState = require(ReplicatedStorage.Shared.GameState)
-local HallBuilder = require(script.Parent.Map.HallBuilder)
 
 local LOBBY_TIME = 15
 local RUN_TIME = 120
@@ -18,6 +17,7 @@ local TICK = 0.25
 local LOAD_ATTEMPTS = 3
 local LOAD_RETRY_DELAY = 1
 local SPAWN_TIMEOUT = 10
+local HALL_TIMEOUT = 10 -- how long start() waits for Hall.Start and Hall.Exit
 
 local RoundService = {}
 
@@ -29,6 +29,13 @@ local round = 0
 -- Players taking part in the current round, and how their round went.
 local participants: { [Player]: boolean } = {}
 local dead: { [Player]: boolean } = {}
+-- True while the round's players are being spawned at Start (RoundState is still Lobby then).
+local spawning = false
+-- What start() set up, so stop() can undo it.
+local connections: { RBXScriptConnection } = {}
+local loop: thread? = nil
+-- Bumped by stop(), so a start() still waiting for the hall gives up instead of starting after it.
+local generation = 0
 
 local function setupLeaderstats(player: Player)
 	if player:FindFirstChild("leaderstats") then
@@ -103,10 +110,24 @@ function RoundService.start()
 		return
 	end
 	started = true
+	local myGeneration = generation
 
-	local hall = workspace:FindFirstChild("Hall") or HallBuilder.build()
-	local start = hall:WaitForChild("Start") :: BasePart
-	local exit = hall:WaitForChild("Exit") :: BasePart
+	-- HallBuilder is only required when there's no hall, so a broken builder can't stop this module loading.
+	-- If setup fails, started is cleared so a later start() can try again.
+	local hallOk, hall = pcall(function()
+		return workspace:FindFirstChild("Hall") or require(script.Parent.Map.HallBuilder).build()
+	end)
+	local foundStart = if hallOk and hall then hall:WaitForChild("Start", HALL_TIMEOUT) else nil
+	local foundExit = if hallOk and hall then hall:WaitForChild("Exit", HALL_TIMEOUT) else nil
+	if generation ~= myGeneration then
+		return -- stop() was called while this was waiting
+	end
+	if not (foundStart and foundStart:IsA("BasePart") and foundExit and foundExit:IsA("BasePart")) then
+		started = false
+		error(if hallOk then "Hall has no Start and Exit parts" else `couldn't build the hall: {hall}`)
+	end
+	local start = foundStart :: BasePart
+	local exit = foundExit :: BasePart
 	local platform = makePlatform(hall, start)
 
 	local function sendToPlatform(player: Player)
@@ -144,49 +165,59 @@ function RoundService.start()
 		setupLeaderstats(player)
 		player:SetAttribute("InRound", false)
 		-- Late joiners and respawned dead players watch from the platform, out of the monster's way.
-		player.CharacterAdded:Connect(function(character)
-			if State:GetAttribute("RoundState") ~= "Running" or isActive(player) then
-				return
-			end
-			character:WaitForChild("HumanoidRootPart", 10)
-			if character.Parent and player.Character == character and not isActive(player) then
-				sendToPlatform(player)
-			end
-		end)
+		-- Sprint-3 fix: this also covers players who join while the round is spawning (still Lobby).
+		table.insert(
+			connections,
+			player.CharacterAdded:Connect(function(character)
+				if (State:GetAttribute("RoundState") ~= "Running" and not spawning) or isActive(player) then
+					return
+				end
+				character:WaitForChild("HumanoidRootPart", 10)
+				if character.Parent and player.Character == character and not isActive(player) then
+					sendToPlatform(player)
+				end
+			end)
+		)
 	end
 
 	for _, player in Players:GetPlayers() do
 		onPlayerAdded(player)
 	end
-	Players.PlayerAdded:Connect(onPlayerAdded)
-	Players.PlayerRemoving:Connect(function(player)
-		participants[player] = nil
-		dead[player] = nil
-	end)
+	table.insert(connections, Players.PlayerAdded:Connect(onPlayerAdded))
+	table.insert(
+		connections,
+		Players.PlayerRemoving:Connect(function(player)
+			participants[player] = nil
+			dead[player] = nil
+		end)
+	)
 
-	exit.Touched:Connect(function(hit)
-		if State:GetAttribute("RoundState") ~= "Running" then
-			return
-		end
-		local character = hit:FindFirstAncestorOfClass("Model")
-		if not character then
-			return
-		end
-		local player = Players:GetPlayerFromCharacter(character)
-		if not player or not isActive(player) then
-			return
-		end
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if not humanoid or humanoid.Health <= 0 then
-			return
-		end
-		player:SetAttribute("Escaped", true)
-		player:SetAttribute("InRound", false)
-		addCoins(player, ESCAPE_REWARD)
-		sendToPlatform(player)
-	end)
+	table.insert(
+		connections,
+		exit.Touched:Connect(function(hit)
+			if State:GetAttribute("RoundState") ~= "Running" then
+				return
+			end
+			local character = hit:FindFirstAncestorOfClass("Model")
+			if not character then
+				return
+			end
+			local player = Players:GetPlayerFromCharacter(character)
+			if not player or not isActive(player) then
+				return
+			end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if not humanoid or humanoid.Health <= 0 then
+				return
+			end
+			player:SetAttribute("Escaped", true)
+			player:SetAttribute("InRound", false)
+			addCoins(player, ESCAPE_REWARD)
+			sendToPlatform(player)
+		end)
+	)
 
-	task.spawn(function()
+	loop = task.spawn(function()
 		while true do
 			-- Lobby: wait for at least one player, then count down.
 			State:SetAttribute("RoundState", "Lobby")
@@ -207,6 +238,7 @@ function RoundService.start()
 				participants[player] = true
 				player:SetAttribute("Escaped", false)
 			end
+			spawning = true
 			local pending = 0
 			for player in participants do
 				pending += 1
@@ -222,6 +254,13 @@ function RoundService.start()
 			local spawnDeadline = os.clock() + SPAWN_TIMEOUT
 			while pending > 0 and os.clock() < spawnDeadline do
 				task.wait(0.1)
+			end
+			spawning = false
+			-- Anyone who joined during the spawn wait and already has a body goes to the platform too.
+			for _, player in Players:GetPlayers() do
+				if not participants[player] then
+					sendToPlatform(player)
+				end
 			end
 
 			-- Running
@@ -249,6 +288,28 @@ function RoundService.start()
 			table.clear(dead)
 		end
 	end)
+end
+
+-- Undoes start(): ends the loop, drops its connections and clears the round. Used by the specs
+-- (sprint-3 fix: each test starts from fresh state) and safe to call when not started.
+function RoundService.stop()
+	generation += 1
+	if loop then
+		task.cancel(loop)
+		loop = nil
+	end
+	for _, connection in connections do
+		connection:Disconnect()
+	end
+	table.clear(connections)
+	round += 1 -- spawns still running from the old loop see a newer round and give up
+	table.clear(participants)
+	table.clear(dead)
+	spawning = false
+	for _, player in Players:GetPlayers() do
+		player:SetAttribute("InRound", false)
+	end
+	started = false
 end
 
 return RoundService

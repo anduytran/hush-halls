@@ -1,29 +1,34 @@
 --!strict
 
 local Config = require(game:GetService("ReplicatedStorage").Shared.Config)
-local HallBuilder = require(script.Parent.Map.HallBuilder)
 local Monetization = require(script.Parent.Monetization)
 local Monster = require(script.Parent.Monster)
 local NoiseService = require(script.Parent.NoiseService)
 local RoundService = require(script.Parent.RoundService)
 
 -- The hall is built first: Monster lives in it and RoundService plays rounds in it.
-local built, buildErr = pcall(HallBuilder.build)
+-- Sprint-3 fix: requiring and building are both in the pcall, so a broken HallBuilder only warns;
+-- the systems below and the Monetization handlers are still set up.
+local built, buildErr = pcall(function()
+	require(script.Parent.Map.HallBuilder).build()
+end)
 if not built then
 	warn(`[server] couldn't build the hall: {buildErr}`)
 end
 
--- Each start() returns straight away. One failing must not stop the rest.
+-- Each start() runs in its own thread: one that fails or waits (e.g. for a missing hall) can't hold up the rest.
 local systems: { { name: string, start: () -> () } } = {
 	{ name = "NoiseService", start = NoiseService.start },
 	{ name = "Monster", start = Monster.start },
 	{ name = "RoundService", start = RoundService.start },
 }
 for _, system in systems do
-	local ok, err = pcall(system.start)
-	if not ok then
-		warn(`[server] {system.name} failed to start: {err}`)
-	end
+	task.spawn(function()
+		local ok, err = pcall(system.start)
+		if not ok then
+			warn(`[server] {system.name} failed to start: {err}`)
+		end
+	end)
 end
 
 -- Cosmetic and coin grants only: nothing sold here touches noise, speed or the monster.

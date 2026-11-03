@@ -8,6 +8,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local GameState = require(ReplicatedStorage.Shared.GameState)
+local SpeedSampler = require(script.Parent.SpeedSampler)
 
 local Monster = {}
 
@@ -23,15 +24,15 @@ local FLOOR_Y = 0
 local PARK_DISTANCE = 200
 local ARRIVE_DISTANCE = 1
 local ENTRY_FALLBACK_Z = 120
-local SAMPLE_INTERVAL = 0.2 -- how often player speeds are measured from their positions
-local MAX_PLAUSIBLE_SPEED = 60 -- faster than this between samples is a teleport, not footsteps
 
 type Sample = { root: BasePart, position: Vector3, speed: number }
 
 local started = false
--- Server-measured horizontal speed of each InRound player, from position changes between samples.
+-- Latest position and server-measured horizontal speed of each InRound player.
 local samples: { [Player]: Sample } = {}
-local sinceSample = 0
+-- Sprint-3 fix: speed is averaged over ~0.5 s by the helper NoiseService also uses (samples under
+-- 0.1 s apart are skipped), so a walker's uneven network updates no longer read as sprinting.
+local sampler = SpeedSampler.new()
 
 local function buildMonster(hall: Instance): Part
 	local body = Instance.new("Part")
@@ -123,34 +124,23 @@ local function aliveRoot(player: Player): BasePart?
 end
 
 -- Measures speed from where the server sees each character, not from the velocity the client reports.
-local function sampleSpeeds(dt: number)
-	sinceSample += dt
-	if sinceSample < SAMPLE_INTERVAL then
-		return
-	end
-	local elapsed = sinceSample
-	sinceSample = 0
+local function sampleSpeeds()
+	local now = os.clock()
 	for _, player in Players:GetPlayers() do
 		local root = aliveRoot(player)
 		if not root then
 			samples[player] = nil
+			sampler.forget(player)
 			continue
 		end
 		local position = root.Position
-		local previous = samples[player]
-		local speed = 0
-		if previous and previous.root == root then
-			local delta = position - previous.position
-			speed = Vector3.new(delta.X, 0, delta.Z).Magnitude / elapsed
-			if speed > MAX_PLAUSIBLE_SPEED then
-				speed = 0
-			end
-		end
+		local speed = sampler.update(player, root, position, now)
 		samples[player] = { root = root, position = position, speed = speed }
 	end
 	for player in samples do
 		if player.Parent ~= Players then
 			samples[player] = nil
+			sampler.forget(player)
 		end
 	end
 end
@@ -196,14 +186,9 @@ local function moveToward(body: Part, target: Vector3, speed: number, dt: number
 	return step >= distance
 end
 
-function Monster.start()
-	if started then
-		return
-	end
-	started = true
-
+-- Builds the monster in the hall and follows RoundState from then on.
+local function run(hall: Instance)
 	local state = GameState.State
-	local hall = workspace:WaitForChild("Hall")
 	local body = buildMonster(hall)
 	body.CFrame = CFrame.new(clampY(parkPosition(hall)))
 
@@ -223,7 +208,7 @@ function Monster.start()
 	end
 
 	local function onHeartbeat(dt: number)
-		sampleSpeeds(dt)
+		sampleSpeeds()
 
 		local noise = state:GetAttribute("Noise")
 		local level = math.clamp(if typeof(noise) == "number" then noise else 0, 0, 1)
@@ -251,7 +236,7 @@ function Monster.start()
 		end
 		table.clear(connections)
 		table.clear(samples)
-		sinceSample = 0
+		sampler.clear()
 		lastHeard = nil
 		body.CanTouch = false
 		body.CFrame = CFrame.new(clampY(parkPosition(hall)))
@@ -277,6 +262,27 @@ function Monster.start()
 
 	state:GetAttributeChangedSignal("RoundState"):Connect(onRoundState)
 	onRoundState()
+end
+
+function Monster.start()
+	if started then
+		return
+	end
+	started = true
+
+	-- Sprint-3 fix: wait for the hall in a task, so start() returns straight away even if the build failed.
+	task.spawn(function()
+		-- Keeps waiting after the warning: RoundService may still build the hall.
+		local hall = workspace:WaitForChild("Hall", 10)
+		if not hall then
+			warn("[Monster] still waiting for Workspace.Hall")
+			hall = workspace:WaitForChild("Hall")
+		end
+		local ok, err = pcall(run, hall)
+		if not ok then
+			warn(`[Monster] failed to start: {err}`)
+		end
+	end)
 end
 
 return Monster

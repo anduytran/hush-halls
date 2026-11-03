@@ -2,6 +2,7 @@
 -- Robux purchases, on the server. Game code says what each purchase gives:
 --   Monetization.onPass("VIP", function(player) ... end)            -- runs when an owner joins, and right after buying
 --   Monetization.onProduct("Coins100", function(player) ... return true end)  -- return true once it's given
+-- A product handler runs inside a DataStore UpdateAsync callback, so it must not yield.
 -- A product's receipt is recorded, so a purchase Roblox retries is never given twice.
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
@@ -112,39 +113,44 @@ MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passI
 	end
 end)
 
--- Check the record, grant outside any DataStore callback (handlers may yield), then record it.
+-- Sprint-3 fix: the check, the grant and the record happen in one UpdateAsync on the receipt key,
+-- so nothing can record or grant the receipt between our check and our write.
 local function processReceipt(receipt: Receipt, store: DataStore, grant: ProductHandler, buyer: Player)
 	local receiptKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
-	local readOk, done = pcall(function()
-		return store:GetAsync(receiptKey)
-	end)
-	if not readOk then
-		warn(`[Monetization] couldn't read purchase {receipt.PurchaseId}: {done}`)
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-	if done then
-		return Enum.ProductPurchaseDecision.PurchaseGranted
-	end
-
-	local grantOk, given = pcall(grant, buyer)
-	if not grantOk then
-		warn(`[Monetization] handler failed for purchase {receipt.PurchaseId}: {given}`)
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-	if given ~= true then
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-
-	local saveOk, err = pcall(function()
-		store:UpdateAsync(receiptKey, function()
+	local alreadyDone = false
+	-- UpdateAsync may run the callback again if the key changes under it; this keeps the grant to once.
+	local granted = false
+	local updateOk, err = pcall(function()
+		store:UpdateAsync(receiptKey, function(done)
+			alreadyDone = done == true
+			if alreadyDone then
+				return nil -- recorded already: leave it, don't grant
+			end
+			if not granted then
+				local grantOk, given = pcall(grant, buyer)
+				if not grantOk then
+					warn(`[Monetization] handler failed for purchase {receipt.PurchaseId}: {given}`)
+					return nil
+				end
+				if given ~= true then
+					return nil
+				end
+				granted = true
+			end
 			return true
 		end)
 	end)
-	if not saveOk then
-		-- It was given, so tell Roblox it's done rather than risk giving it again on retry.
-		warn(`[Monetization] granted purchase {receipt.PurchaseId} but couldn't record it: {err}`)
+	if alreadyDone or granted then
+		if granted and not updateOk then
+			-- It was given, so tell Roblox it's done rather than risk giving it again on retry.
+			warn(`[Monetization] granted purchase {receipt.PurchaseId} but couldn't record it: {err}`)
+		end
+		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
-	return Enum.ProductPurchaseDecision.PurchaseGranted
+	if not updateOk then
+		warn(`[Monetization] couldn't read purchase {receipt.PurchaseId}: {err}`)
+	end
+	return Enum.ProductPurchaseDecision.NotProcessedYet
 end
 
 MarketplaceService.ProcessReceipt = function(receipt)
