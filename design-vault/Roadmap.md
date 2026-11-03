@@ -119,8 +119,12 @@ Sprint 22 (2026-11-03): round test hooks out of production, spec hardened (merge
 - [x] Fake players moved to Studio-only `src/server/RoundTestPlayers.luau`; RoundService reads players through a swappable `PlayerSource` (live game always uses the default).
 - [x] Spec watches warnings via a `report()`/`_test.onWarn` hook and ScriptContext errors, not message text; fixed sleeps replaced by state waits.
 
+Sprint 23 (2026-11-03): round spec for spawn failures and fake deaths (merged; 23 of 23 RoundService tests pass in a one-player Studio play-test, not played in a live round).
+- [x] Fix: a player still spawning at the 10 s spawn timeout is dropped from the round with one warning and spectates, instead of holding the round open or appearing at Start mid-round.
+- [x] `RoundTestPlayers`: `failLoadCharacter`, `holdLoadCharacter`, `kill`, `_test.pretendLiveServer`; specs cover LoadCharacter failure, spawn timeout, a fake dying, and attach refusing on a live server.
+
 ## Needs a playtest
-- Sprint 22 test-gap follow-ups: no spec covers a LoadCharacter failure, spawn timeout or a fake dying; warnings from main.server's RoundService instance are no longer caught; check `RoundTestPlayers` can't attach on a live server.
+- Sprint 23: a slow-loading player in a live server spectates that round and joins the next; `RoundTestPlayers` can't attach on a real live server (only simulated in Studio). Still open from sprint 22: warnings from main.server's RoundService instance aren't caught by the spec.
 - Full round in a live multi-player server (sprints 20–21 specs passed in Studio with one real player; sprint 21 used fake players, which Monster and NoiseService ignore): join mid-round, spectators, escape pays once.
 - HUD goal line (sprints 17–19): Shift still sprints after respawn; text follows round state and `Escaped` in a live round; check on a real phone and desktop (simulated 375x667 layout passes; screens under ~370 px would touch the Coins column).
 - Monster hearing band (sprint 16): a player at 12–14 studs/s is heard but chased after sprinters; `Monster._test` absent on a live server.

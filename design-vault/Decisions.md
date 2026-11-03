@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 23: spawn timeout drops the player
+- **A player whose spawn outlasts SPAWN_TIMEOUT (10 s) is removed from that round and spectates**, so one stuck load can't hold the round or drop someone at Start mid-round. Alternative considered: let the late spawn join the running round; rejected as it gives a head start into an already-moving round and a spec showed it could hang the start.
+
 ## 2026-11-03 — Sprint 22: test players out of RoundService
 - **Fake players live in a separate Studio-only `RoundTestPlayers` module**, plugged into RoundService through a swappable `PlayerSource`; supersedes sprint 21's `_test.addFakePlayer` inside RoundService. Keeps test code out of the production module. Specs detect warnings through a `report()` hook instead of matching log text. Alternative considered: keeping fakes in `_test`; rejected as it bloats the live module.
 
