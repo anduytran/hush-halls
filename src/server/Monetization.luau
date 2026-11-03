@@ -20,11 +20,15 @@
 -- Sprint-10 fix: while our grant runs or its result is still being written, a heartbeat refreshes our pending
 -- marker's `at` every HEARTBEAT seconds, so only markers left by dead servers ever go stale. A pending marker with
 -- no numeric `at` counts as busy and is restamped with the current time, so it goes stale a day later.
+-- Sprint-11 fix: a heartbeat stops after MAX_HEARTBEAT_AGE (with one warn), so a handler that never returns lets its
+-- marker go stale like a dead server's. The restamp happens once per marker (`restamped = true`). A receipt whose
+-- result write was given up on is never granted again by this server (`gaveUp`).
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local Products = require(game:GetService("ReplicatedStorage").Shared.Products)
 
 local Monetization = {}
@@ -42,9 +46,17 @@ local MAX_RETRIES = 10
 local SHUTDOWN_WAIT = 20
 -- Sprint-10 fix: how often (seconds) a live attempt refreshes its pending marker's `at`.
 local HEARTBEAT = 60
+-- Sprint-11 fix: a heartbeat refreshes for at most this many seconds in total, then stops (with one warn).
+local MAX_HEARTBEAT_AGE = 1800
+
+type Clock = {
+	now: () -> number,
+	wait: (seconds: number) -> (),
+	delay: (seconds: number, callback: () -> ()) -> (),
+}
 
 -- Sprint-9 fix: the clock and wait used for markers and retries. Specs swap these for a fake clock.
-local clock = {
+local realClock: Clock = {
 	now = function(): number
 		return os.time()
 	end,
@@ -56,13 +68,13 @@ local clock = {
 		task.delay(seconds, callback)
 	end,
 }
+local clock: Clock = table.clone(realClock)
 
 -- Sprint-10 fix: every warning goes through here, so specs can read them.
-local log = {
-	warn = function(message: string)
-		warn(message)
-	end,
-}
+local function realWarn(message: string)
+	warn(message)
+end
+local log = { warn = realWarn }
 
 type PassHandler = (player: Player) -> ()
 type ProductHandler = (player: Player) -> boolean
@@ -76,6 +88,9 @@ local history: DataStore? = nil
 local processing: { [string]: boolean } = {}
 -- Sprint-9 fix: background writes and late grants still running, so BindToClose can wait for them.
 local inFlight = 0
+-- Sprint-11 fix: receipt keys whose result keepWriting gave up on, with the token of the attempt that gave up.
+-- This server never grants them again (it may already have), whatever the store says later.
+local gaveUp: { [string]: string } = {}
 
 local function getHistory(): DataStore?
 	if history then
@@ -215,8 +230,11 @@ end
 
 -- Sprint-10 fix: refreshes our pending marker's `at` every HEARTBEAT seconds until the returned stop function is
 -- called, or the marker is no longer our pending one. Never yields; each beat runs in a task of its own.
+-- Sprint-11 fix: it also stops (warning once) once a next beat would come more than MAX_HEARTBEAT_AGE seconds after
+-- it started. The marker then goes stale STALE_PENDING after its last refresh, like a dead server's.
 local function startHeartbeat(store: DataStore, receiptKey: string, token: string): () -> ()
 	local beating = true
+	local started = clock.now()
 	local function beat()
 		if not beating then
 			return
@@ -227,6 +245,13 @@ local function startHeartbeat(store: DataStore, receiptKey: string, token: strin
 			beating = false -- our marker is gone or final: nothing left to keep alive
 		elseif not ok then
 			log.warn(`[Monetization] couldn't refresh pending marker {receiptKey}, trying again later: {wasOurs}`)
+		end
+		if beating and clock.now() + HEARTBEAT - started > MAX_HEARTBEAT_AGE then
+			beating = false -- Sprint-11 fix
+			log.warn(
+				`[Monetization] stopped refreshing pending marker {receiptKey} after {MAX_HEARTBEAT_AGE} s;`
+					.. ` it goes stale {STALE_PENDING} s after its last refresh.`
+			)
 		end
 		if beating then
 			clock.delay(HEARTBEAT, beat)
@@ -255,11 +280,13 @@ local function keepWriting(store: DataStore, receiptKey: string, token: string, 
 			break
 		end
 		if attempt == MAX_RETRIES then
+			-- Sprint-11 fix: this server never grants this receipt again.
+			gaveUp[receiptKey] = token
 			-- Sprint-10 fix: name the receipt key, and say what happens to it now.
 			log.warn(
 				`[Monetization] gave up recording purchase {purchaseId} (receipt {receiptKey}) as {final.status}`
 					.. ` after {MAX_RETRIES} attempts: {wasOurs}. It stays pending (NotProcessedYet) until it goes`
-					.. ` stale, {STALE_PENDING} s after its last heartbeat.`
+					.. ` stale, {STALE_PENDING} s after its last heartbeat; this server won't grant it again.`
 			)
 			break
 		end
@@ -332,6 +359,10 @@ end
 local function processReceipt(receipt: Receipt, store: DataStore, grant: ProductHandler, buyer: Player)
 	local receiptKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
 	local purchaseId = receipt.PurchaseId
+	-- Sprint-11 fix: we gave up writing this receipt's result, so it may already be given: never grant it again here.
+	if gaveUp[receiptKey] then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
 	local token = HttpService:GenerateGUID(false)
 	local function marker(status: string)
 		return { status = status, at = clock.now(), token = token }
@@ -346,11 +377,13 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 			end
 			if isPending(value) then
 				status = "busy" -- another attempt owns it (its grant may still be running); stale ones fall through
-				if type(value.at) ~= "number" then
+				if type(value.at) ~= "number" and value.restamped ~= true then
 					-- Sprint-10 fix: no time: keep the same marker (same token) but stamp it now, so it goes stale
 					-- a day from now instead of staying busy for good.
+					-- Sprint-11 fix: only once. A marker already restamped is just busy, so it can't be extended.
 					local restamped = table.clone(value)
 					restamped.at = clock.now()
+					restamped.restamped = true
 					return restamped
 				end
 				return nil
@@ -447,25 +480,47 @@ end)
 
 -- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync, GetAsync) and handler, and read
 -- the first retry delay.
-Monetization._processReceipt = processReceipt
-Monetization._RETRY_FIRST = RETRY_FIRST
--- Sprint-9 fix: specs replace `_test.clock.now` and `_test.clock.wait` with a fake clock, so they never really
--- wait, and read the limits and in-flight count.
-Monetization._test = {
-	clock = clock,
-	STALE_PENDING = STALE_PENDING,
-	MAX_RETRIES = MAX_RETRIES,
-	SHUTDOWN_WAIT = SHUTDOWN_WAIT,
-	-- Sprint-10 fix: specs swap `clock.delay` and `log.warn` too, and read the registered handlers.
-	HEARTBEAT = HEARTBEAT,
-	log = log,
-	passHandlers = passHandlers,
-	productHandlers = productHandlers,
-	drain = drain,
-	inFlight = function(): number
-		return inFlight
-	end,
-}
+-- Sprint-11 fix: only in Studio, so live servers never expose them. `_test` is frozen; the clock and warn are
+-- swapped through its setters.
+if RunService:IsStudio() then
+	Monetization._processReceipt = processReceipt
+	Monetization._RETRY_FIRST = RETRY_FIRST
+	-- Sprint-9 fix: specs use a fake clock, so they never really wait, and read the limits and in-flight count.
+	Monetization._test = table.freeze({
+		STALE_PENDING = STALE_PENDING,
+		MAX_RETRIES = MAX_RETRIES,
+		SHUTDOWN_WAIT = SHUTDOWN_WAIT,
+		-- Sprint-10 fix: specs read the heartbeat and the registered handlers too.
+		HEARTBEAT = HEARTBEAT,
+		MAX_HEARTBEAT_AGE = MAX_HEARTBEAT_AGE, -- Sprint-11 fix
+		passHandlers = passHandlers,
+		productHandlers = productHandlers,
+		drain = drain,
+		inFlight = function(): number
+			return inFlight
+		end,
+		-- Sprint-11 fix: replaces the clock's now/wait/delay with the given ones (missing ones are the real ones).
+		-- `nil` puts the real clock back.
+		setClock = function(
+			fake: { now: (() -> number)?, wait: ((number) -> ())?, delay: ((number, () -> ()) -> ())? }?
+		)
+			clock.now = (fake and fake.now) or realClock.now
+			clock.wait = (fake and fake.wait) or realClock.wait
+			clock.delay = (fake and fake.delay) or realClock.delay
+		end,
+		-- Sprint-11 fix: replaces where warnings go; `nil` puts the real warn back.
+		setWarn = function(fakeWarn: ((string) -> ())?)
+			log.warn = fakeWarn or realWarn
+		end,
+		-- Sprint-11 fix: the token of the attempt that gave up on `receiptKey`, if any, and a reset for specs.
+		gaveUp = function(receiptKey: string): string?
+			return gaveUp[receiptKey]
+		end,
+		clearGaveUp = function()
+			table.clear(gaveUp)
+		end,
+	})
+end
 
 MarketplaceService.ProcessReceipt = function(receipt)
 	local key = keyFor(Products.Products, receipt.ProductId)
