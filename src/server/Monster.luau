@@ -24,6 +24,7 @@ local FLOOR_Y = 0
 local PARK_DISTANCE = 200
 local ARRIVE_DISTANCE = 1
 local ENTRY_FALLBACK_Z = 120
+local HALL_WARN_INTERVAL = 30 -- seconds between "still waiting for the hall" warnings
 
 type Sample = { root: BasePart, position: Vector3, speed: number }
 
@@ -272,11 +273,14 @@ function Monster.start()
 
 	-- Sprint-3 fix: wait for the hall in a task, so start() returns straight away even if the build failed.
 	task.spawn(function()
-		-- Keeps waiting after the warning: RoundService may still build the hall.
-		local hall = workspace:WaitForChild("Hall", 10)
-		if not hall then
-			warn("[Monster] still waiting for Workspace.Hall")
-			hall = workspace:WaitForChild("Hall")
+		-- Keeps waiting after each warning: RoundService may still build the hall.
+		-- Sprint-4 fix: warns every HALL_WARN_INTERVAL seconds, so a hall that never comes stays visible in the log.
+		local hall = workspace:WaitForChild("Hall", HALL_WARN_INTERVAL)
+		local waited = HALL_WARN_INTERVAL
+		while not hall do
+			warn(`[Monster] still waiting for Workspace.Hall ({waited}s)`)
+			hall = workspace:WaitForChild("Hall", HALL_WARN_INTERVAL)
+			waited += HALL_WARN_INTERVAL
 		end
 		local ok, err = pcall(run, hall)
 		if not ok then

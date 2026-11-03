@@ -2,8 +2,8 @@
 -- Robux purchases, on the server. Game code says what each purchase gives:
 --   Monetization.onPass("VIP", function(player) ... end)            -- runs when an owner joins, and right after buying
 --   Monetization.onProduct("Coins100", function(player) ... return true end)  -- return true once it's given
--- A product handler runs inside a DataStore UpdateAsync callback, so it must not yield.
--- A product's receipt is recorded, so a purchase Roblox retries is never given twice.
+-- A product's receipt is reserved in a DataStore before its handler runs and marked done after,
+-- so a purchase Roblox retries is never given twice. The handler runs outside UpdateAsync and may yield.
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local MarketplaceService = game:GetService("MarketplaceService")
@@ -11,6 +11,10 @@ local Players = game:GetService("Players")
 local Products = require(game:GetService("ReplicatedStorage").Shared.Products)
 
 local Monetization = {}
+
+-- A "pending" receipt marker older than this (seconds) is from an attempt that died mid-grant
+-- (its server shut down, taking the unsaved grant with it), so a retry may take it over.
+local PENDING_TIMEOUT = 120
 
 type PassHandler = (player: Player) -> ()
 type ProductHandler = (player: Player) -> boolean
@@ -113,45 +117,80 @@ MarketplaceService.PromptGamePassPurchaseFinished:Connect(function(player, passI
 	end
 end)
 
--- Sprint-3 fix: the check, the grant and the record happen in one UpdateAsync on the receipt key,
--- so nothing can record or grant the receipt between our check and our write.
+local function isDone(value: any): boolean
+	-- `true` is how receipts were recorded before sprint 4.
+	return value == true or (type(value) == "table" and value.status == "done")
+end
+
+local function isFreshPending(value: any, now: number): boolean
+	return type(value) == "table"
+		and value.status == "pending"
+		and type(value.at) == "number"
+		and now - value.at < PENDING_TIMEOUT
+end
+
+-- Sprint-4 fix: UpdateAsync only reserves the receipt key with a "pending" marker. The grant runs after it
+-- returns (so a retried UpdateAsync callback can never grant twice), then a second UpdateAsync marks it done.
+-- A failed grant removes the marker so Roblox's retry can try again.
 local function processReceipt(receipt: Receipt, store: DataStore, grant: ProductHandler, buyer: Player)
 	local receiptKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
-	local alreadyDone = false
-	-- UpdateAsync may run the callback again if the key changes under it; this keeps the grant to once.
-	local granted = false
-	local updateOk, err = pcall(function()
-		store:UpdateAsync(receiptKey, function(done)
-			alreadyDone = done == true
-			if alreadyDone then
-				return nil -- recorded already: leave it, don't grant
+	local now = os.time()
+	local status: "done" | "busy" | "reserved" = "busy"
+	local reserveOk, reserveErr = pcall(function()
+		store:UpdateAsync(receiptKey, function(value)
+			-- May run more than once: it only sets `status` and returns the marker, nothing else.
+			if isDone(value) then
+				status = "done"
+				return nil
 			end
-			if not granted then
-				local grantOk, given = pcall(grant, buyer)
-				if not grantOk then
-					warn(`[Monetization] handler failed for purchase {receipt.PurchaseId}: {given}`)
-					return nil
-				end
-				if given ~= true then
-					return nil
-				end
-				granted = true
+			if isFreshPending(value, now) then
+				status = "busy" -- another attempt is granting it right now
+				return nil
 			end
-			return true
+			status = "reserved"
+			return { status = "pending", at = now }
 		end)
 	end)
-	if alreadyDone or granted then
-		if granted and not updateOk then
-			-- It was given, so tell Roblox it's done rather than risk giving it again on retry.
-			warn(`[Monetization] granted purchase {receipt.PurchaseId} but couldn't record it: {err}`)
-		end
+	if not reserveOk then
+		warn(`[Monetization] couldn't reserve purchase {receipt.PurchaseId}: {reserveErr}`)
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	if status == "done" then
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
-	if not updateOk then
-		warn(`[Monetization] couldn't read purchase {receipt.PurchaseId}: {err}`)
+	if status == "busy" then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
-	return Enum.ProductPurchaseDecision.NotProcessedYet
+
+	local grantOk, given = pcall(grant, buyer)
+	if not grantOk or given ~= true then
+		if not grantOk then
+			warn(`[Monetization] handler failed for purchase {receipt.PurchaseId}: {given}`)
+		end
+		-- If this fails too, the marker goes stale after PENDING_TIMEOUT and a later retry can take it over.
+		local clearOk, clearErr = pcall(function()
+			store:RemoveAsync(receiptKey)
+		end)
+		if not clearOk then
+			warn(`[Monetization] couldn't clear pending purchase {receipt.PurchaseId}: {clearErr}`)
+		end
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+
+	local doneOk, doneErr = pcall(function()
+		store:UpdateAsync(receiptKey, function()
+			return { status = "done", at = now }
+		end)
+	end)
+	if not doneOk then
+		-- It was given, so tell Roblox it's done rather than risk giving it again on retry.
+		warn(`[Monetization] granted purchase {receipt.PurchaseId} but couldn't record it: {doneErr}`)
+	end
+	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
+
+-- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync/RemoveAsync) and handler.
+Monetization._processReceipt = processReceipt
 
 MarketplaceService.ProcessReceipt = function(receipt)
 	local key = keyFor(Products.Products, receipt.ProductId)

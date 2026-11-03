@@ -17,18 +17,28 @@ if not built then
 end
 
 -- Each start() runs in its own thread: one that fails or waits (e.g. for a missing hall) can't hold up the rest.
+-- Sprint-4 fix: a start() that errors is tried again every START_RETRY_DELAY seconds, up to START_RETRIES times.
+local START_RETRY_DELAY = 5
+local START_RETRIES = 5
 local systems: { { name: string, start: () -> () } } = {
 	{ name = "NoiseService", start = NoiseService.start },
 	{ name = "Monster", start = Monster.start },
 	{ name = "RoundService", start = RoundService.start },
 }
+local function tryStart(system: { name: string, start: () -> () }, attempt: number)
+	local ok, err = pcall(system.start)
+	if ok then
+		return
+	end
+	if attempt > START_RETRIES then
+		warn(`[server] {system.name} failed to start, giving up: {err}`)
+		return
+	end
+	warn(`[server] {system.name} failed to start (retry {attempt}/{START_RETRIES} in {START_RETRY_DELAY}s): {err}`)
+	task.delay(START_RETRY_DELAY, tryStart, system, attempt + 1)
+end
 for _, system in systems do
-	task.spawn(function()
-		local ok, err = pcall(system.start)
-		if not ok then
-			warn(`[server] {system.name} failed to start: {err}`)
-		end
-	end)
+	task.spawn(tryStart, system, 1)
 end
 
 -- Cosmetic and coin grants only: nothing sold here touches noise, speed or the monster.

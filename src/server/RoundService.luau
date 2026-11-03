@@ -36,6 +36,8 @@ local connections: { RBXScriptConnection } = {}
 local loop: thread? = nil
 -- Bumped by stop(), so a start() still waiting for the hall gives up instead of starting after it.
 local generation = 0
+-- Where spectators and escaped players wait; set by start().
+local platform: BasePart? = nil
 
 local function setupLeaderstats(player: Player)
 	if player:FindFirstChild("leaderstats") then
@@ -63,16 +65,16 @@ local function makePlatform(hall: Instance, start: BasePart): BasePart
 	if existing and existing:IsA("BasePart") then
 		return existing
 	end
-	local platform = Instance.new("Part")
-	platform.Name = "LobbyPlatform"
-	platform.Anchored = true
-	platform.Size = Vector3.new(40, 1, 40)
-	platform.CFrame = CFrame.new(start.Position + Vector3.new(0, PLATFORM_HEIGHT, 0))
-	platform.Material = Enum.Material.SmoothPlastic
-	platform.Color = Color3.fromRGB(90, 90, 110)
-	platform.TopSurface = Enum.SurfaceType.Smooth
-	platform.Parent = hall
-	return platform
+	local part = Instance.new("Part")
+	part.Name = "LobbyPlatform"
+	part.Anchored = true
+	part.Size = Vector3.new(40, 1, 40)
+	part.CFrame = CFrame.new(start.Position + Vector3.new(0, PLATFORM_HEIGHT, 0))
+	part.Material = Enum.Material.SmoothPlastic
+	part.Color = Color3.fromRGB(90, 90, 110)
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.Parent = hall
+	return part
 end
 
 -- Alive, still in the hall, and hasn't escaped.
@@ -87,6 +89,26 @@ local function roundOver(): boolean
 		end
 	end
 	return true
+end
+
+local function sendToPlatform(player: Player)
+	local character = player.Character
+	if character and platform then
+		local offset = Vector3.new(math.random(-12, 12), 4, math.random(-12, 12))
+		character:PivotTo(CFrame.new(platform.Position + offset))
+	end
+end
+
+-- Late joiners and respawned dead players watch from the platform, out of the monster's way.
+-- Sprint-3 fix: this also covers players who join while the round is spawning (still Lobby).
+local function placeSpectator(player: Player, character: Model)
+	if (State:GetAttribute("RoundState") ~= "Running" and not spawning) or isActive(player) then
+		return
+	end
+	character:WaitForChild("HumanoidRootPart", 10)
+	if character.Parent and player.Character == character and not isActive(player) then
+		sendToPlatform(player)
+	end
 end
 
 -- LoadCharacter can fail (e.g. the player is leaving); retry a few times before giving up.
@@ -128,15 +150,7 @@ function RoundService.start()
 	end
 	local start = foundStart :: BasePart
 	local exit = foundExit :: BasePart
-	local platform = makePlatform(hall, start)
-
-	local function sendToPlatform(player: Player)
-		local character = player.Character
-		if character then
-			local offset = Vector3.new(math.random(-12, 12), 4, math.random(-12, 12))
-			character:PivotTo(CFrame.new(platform.Position + offset))
-		end
-	end
+	platform = makePlatform(hall, start)
 
 	local function spawnAtStart(player: Player, thisRound: number)
 		local character = loadCharacter(player)
@@ -164,18 +178,10 @@ function RoundService.start()
 	local function onPlayerAdded(player: Player)
 		setupLeaderstats(player)
 		player:SetAttribute("InRound", false)
-		-- Late joiners and respawned dead players watch from the platform, out of the monster's way.
-		-- Sprint-3 fix: this also covers players who join while the round is spawning (still Lobby).
 		table.insert(
 			connections,
 			player.CharacterAdded:Connect(function(character)
-				if (State:GetAttribute("RoundState") ~= "Running" and not spawning) or isActive(player) then
-					return
-				end
-				character:WaitForChild("HumanoidRootPart", 10)
-				if character.Parent and player.Character == character and not isActive(player) then
-					sendToPlatform(player)
-				end
+				placeSpectator(player, character)
 			end)
 		)
 	end
@@ -290,9 +296,12 @@ function RoundService.start()
 	end)
 end
 
--- Undoes start(): ends the loop, drops its connections and clears the round. Used by the specs
--- (sprint-3 fix: each test starts from fresh state) and safe to call when not started.
+-- TEST-ONLY: game code never calls this. Undoes start(): ends the loop, drops its connections and clears
+-- the round, so each spec starts from fresh state. Sprint-4 fix: does nothing unless start() has run.
 function RoundService.stop()
+	if not started then
+		return
+	end
 	generation += 1
 	if loop then
 		task.cancel(loop)
@@ -310,6 +319,19 @@ function RoundService.stop()
 		player:SetAttribute("InRound", false)
 	end
 	started = false
+end
+
+-- TEST-ONLY hooks: a test server has no real Players, so the spec drives the spawn-wait join path directly.
+function RoundService._setSpawning(on: boolean)
+	spawning = on
+end
+
+function RoundService._placeSpectator(player: Player, character: Model)
+	placeSpectator(player, character)
+end
+
+function RoundService._platform(): BasePart?
+	return platform
 end
 
 return RoundService

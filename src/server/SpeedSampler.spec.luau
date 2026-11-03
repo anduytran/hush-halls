@@ -55,6 +55,7 @@ local tests = {
 		assert(SpeedSampler.WINDOW == 0.5, `WINDOW should be 0.5, got {SpeedSampler.WINDOW}`)
 		assert(SpeedSampler.MIN_SAMPLE == 0.1, `MIN_SAMPLE should be 0.1, got {SpeedSampler.MIN_SAMPLE}`)
 		assert(SpeedSampler.MAX_STEP == 40, `MAX_STEP should be 40, got {SpeedSampler.MAX_STEP}`)
+		assert(SpeedSampler.SPRINT_SPEED == 24, `SPRINT_SPEED should be 24, got {SpeedSampler.SPRINT_SPEED}`)
 	end,
 
 	["new() returns update, speed, forget and clear"] = function()
@@ -163,7 +164,7 @@ local tests = {
 		end
 	end,
 
-	["a single teleport is dropped and the sprinter stays near 24"] = function()
+	["a single teleport counts as sprint speed and the sprinter stays near 24"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
 		-- Sprint 0 to 1.0 s, teleport 100 studs at 1.1 s, then keep sprinting from the new spot.
@@ -173,7 +174,7 @@ local tests = {
 			table.insert(track, { time = 1.1 + i * 0.1, x = 24 * 1.1 + 100 + 24 * i * 0.1 })
 		end
 		local speeds = feed(sampler, player, root, track)
-		-- The teleport sample is index 12; without the filter it would read far above 24, or be zeroed by an old cutoff.
+		-- The teleport sample is index 12; unclamped it would read far above 24, and dropped it would leave a gap.
 		for i = 2, #speeds do
 			assertNear(speeds[i], 24, `sprinter across a teleport, sample {i}`)
 		end
@@ -188,13 +189,47 @@ local tests = {
 		assertNear(kept, 400, "a 40-stud step", 0.5)
 	end,
 
-	["a step just over MAX_STEP is dropped"] = function()
+	["a step just over MAX_STEP counts as sprint speed"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
 		sampler.update(player, root, { X = 0, Z = 0 }, 0)
-		local dropped = sampler.update(player, root, { X = 40.5, Z = 0 }, 0.1)
-		assert(dropped == 0, `a 40.5-stud step must be dropped, read {dropped}`)
-		assertNear(sampler.speed(player), 0, "speed() after a dropped step")
+		local loud = sampler.update(player, root, { X = 40.5, Z = 0 }, 0.1)
+		assertNear(loud, SpeedSampler.SPRINT_SPEED, "a 40.5-stud step")
+		assertNear(sampler.speed(player), SpeedSampler.SPRINT_SPEED, "speed() after a long step")
+	end,
+
+	["a standing player who teleports is heard as sprinting for that step"] = function()
+		local sampler = SpeedSampler.new()
+		local player, root = {}, {}
+		-- Stands still 0 to 1.0 s, then jumps 500 studs at 1.1 s.
+		local track = straight(0, every(0.1, 10))
+		table.insert(track, { time = 1.1, x = 500 })
+		local speeds = feed(sampler, player, root, track)
+		-- Window at 1.1 s: four stationary 0.1 s deltas plus the 0.1 s jump at 24 => 2.4 studs over 0.5 s, about 4.8.
+		-- The point: it is not 0 (ignored) and not 5000 (raw).
+		assert(speeds[12] > 0, `a teleport must make noise, read {speeds[12]}`)
+		assert(
+			speeds[12] <= SpeedSampler.SPRINT_SPEED + TOLERANCE,
+			`a teleport must not read above sprint speed, read {speeds[12]}`
+		)
+	end,
+
+	["a long step over a long gap still reads as sprint speed, not more"] = function()
+		local sampler = SpeedSampler.new()
+		local player, root = {}, {}
+		sampler.update(player, root, { X = 0, Z = 0 }, 0)
+		-- 300 studs in 0.4 s would be 750 studs/s raw.
+		local speed = sampler.update(player, root, { X = 300, Z = 0 }, 0.4)
+		assertNear(speed, SpeedSampler.SPRINT_SPEED, "a long step over 0.4 s")
+	end,
+
+	["a walker's long step after a long stall keeps its real speed"] = function()
+		local sampler = SpeedSampler.new()
+		local player, root = {}, {}
+		sampler.update(player, root, { X = 0, Z = 0 }, 0)
+		-- 50 studs in 5 s is 10 studs/s: over MAX_STEP, but slower than a sprint, so it isn't raised to 24.
+		local speed = sampler.update(player, root, { X = 50, Z = 0 }, 5)
+		assertNear(speed, 10, "a walker after a 5 s stall")
 	end,
 
 	["a diagonal step is measured horizontally"] = function()
