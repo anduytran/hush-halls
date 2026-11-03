@@ -1,5 +1,5 @@
 ---
-status: in-progress   # wired end to end in sprint 2, not playtested
+status: in-progress   # wired end to end in sprint 2; reviewer fixes in sprint 3, not playtested
 tags: [design, mechanic]
 ---
 # Round loop

@@ -1,5 +1,5 @@
 ---
-status: in-progress   # InRound-only noise/drowning in sprint 2, not playtested
+status: in-progress   # InRound-only noise/drowning in sprint 2; per-step teleport filter in sprint 3, not playtested
 tags: [design, mechanic]
 ---
 # Sprint, noise and water

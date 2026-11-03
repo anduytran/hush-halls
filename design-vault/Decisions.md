@@ -2,6 +2,12 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 3: reviewer follow-ups
+- **One shared `SpeedSampler` for Monster and NoiseService.** It averages speed over about 0.5 s and skips samples under 0.1 s apart. The alternative was each system keeping its own deltas, which could disagree and read walkers as sprinting.
+- **Teleport filter is per step (over 40 studs), not per speed (over 60 studs/s).** The old rule zeroed real sprinters.
+- **Receipts are checked, granted and recorded in one `UpdateAsync`.** This replaces sprint 2's grant-then-record, which had a gap between the check and the write.
+- **A broken HallBuilder only warns.** The systems and purchase handlers still start.
+
 ## 2026-11-03 — Sprint 2: round wiring
 - **`InRound` player attribute is the single "who's playing" flag.** RoundService sets it; Monster and NoiseService ignore anyone without it. The alternative was each system tracking participants itself.
 - **Movement speed for hearing and noise comes from server position deltas**, sampled every 0.2 s, not `AssemblyLinearVelocity` (client-owned, so spoofable). Deltas over 60 studs/s count as teleports and are ignored.

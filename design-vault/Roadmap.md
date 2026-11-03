@@ -17,8 +17,18 @@ Sprint 2 (2026-11-03): round loop wired end to end and reviewer blockers fixed (
 - [x] Monetization: lazy DataStore, grant-then-record receipts with no double grants.
 - [x] Cloud specs added: `Monster.cloud.spec.luau`, `RoundService.cloud.spec.luau` (not run yet).
 
+Sprint 3 (2026-11-03): six reviewer follow-ups on the round loop fixed (merged; checks pass, not run in Studio).
+- [x] Receipts: check, grant and record happen in one `UpdateAsync` on the receipt key (`Monetization.luau`).
+- [x] New `src/server/SpeedSampler.luau` (+ spec): speed averaged over about 0.5 s, shared by Monster and NoiseService, so a walker's uneven network updates don't read as sprinting.
+- [x] Teleport filter only skips a single step over 40 studs (`SpeedSampler.MAX_STEP`), so sprinters stay audible.
+- [x] Monster waits for the hall in its own task; `start()` returns straight away.
+- [x] Players who join while a round is spawning are handled as spectators (`RoundService.luau`).
+- [x] `main.server.luau`: requiring and building the hall are both in the pcall, so a broken HallBuilder only warns.
+- [x] `RoundService.cloud.spec.luau`: each test starts from fresh round state.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprint 1 or sprint 2.
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–3.
+- Run `SpeedSampler.spec.luau`; check that walkers stay quiet and sprinters are heard.
 - Full round end to end: spectators on the platform, InRound cleared on death/escape/Ended, monster parks between rounds.
 - Run the two `.cloud.spec.luau` files.
 - Sprint/noise/water: water rises only while Running, players drown, Sprint remote works from Shift and the touch button.
