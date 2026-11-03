@@ -2,6 +2,12 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 5: reviewer follow-ups
+- **Receipt markers carry a per-attempt token.** Grant only when the store holds our token; mark done only over our own marker. Accepted limit: a handler yielding past 120 s while another server takes over can still double-grant, since grant and done-write can't be atomic.
+- **Teleport-sized steps reset the speed reading to 0** (like a respawn), replacing sprint 4's cap at sprint speed. Reviewer's call.
+- **A started system is never restarted** by main.server's retry loop; a failed `RoundService.start()` tears down what it set up.
+- **RoundService test hooks grouped under `_test`** so they can't be mistaken for the public API.
+
 ## 2026-11-03 — Sprint 4: reviewer follow-ups
 - **Receipt grants run outside `UpdateAsync`.** UpdateAsync can re-run its callback, which could grant twice, and grant handlers may yield. Now: reserve (pending) → grant → mark done. This replaces sprint 3's single-UpdateAsync flow.
 - **Stale pending markers (over 120 s) are taken over.** This is safe only while Coins aren't saved; revisit if purchases ever persist.

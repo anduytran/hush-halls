@@ -31,11 +31,19 @@ Sprint 4 (2026-11-03): reviewer follow-ups (merged; checks pass, not run in a li
 - [x] `main.server.luau`: a system whose `start()` errors is retried every 5 s, up to 5 times.
 - [x] Monster warns every 30 s while it waits for the hall, instead of once.
 - [x] `RoundService.stop()` does nothing unless started (test-only).
-- [x] SpeedSampler: a single step over 40 studs is kept but capped at sprint speed, so there's no silent gap.
+- [x] SpeedSampler: a single step over 40 studs is kept but capped at sprint speed, so there's no silent gap. (Replaced in sprint 5.)
+
+Sprint 5 (2026-11-03): five sprint-4 reviewer follow-ups (merged; checks pass, not run in a live round).
+- [x] Receipts: each attempt's pending marker carries its own token; it grants only if the store holds that token, and marks done only over its own marker. Known limit: a handler that yields past 120 s while another server takes over can still double-grant.
+- [x] `main.server.luau`: a system that started once is never started again by the retry loop.
+- [x] `RoundService`: a failed `start()` undoes what it set up; `stop()` also clears the platform. Test hooks moved into `RoundService._test`.
+- [x] SpeedSampler: a single step over 40 studs now resets the player's entry (reading 0, like a respawn) instead of being capped.
+- [x] Specs updated: `Monetization.cloud.spec.luau`, `RoundService.cloud.spec.luau`, `SpeedSampler.spec.luau`.
 
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–4.
-- Run `Monetization.cloud.spec.luau` (sprint 4 receipt flow).
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–5.
+- Run `Monetization.cloud.spec.luau` (sprint 5 token receipt flow).
+- Check a failed RoundService start retries cleanly and a started system isn't restarted.
 - Run `SpeedSampler.spec.luau`; check that walkers stay quiet and sprinters are heard.
 - Full round end to end: spectators on the platform, InRound cleared on death/escape/Ended, monster parks between rounds.
 - Run the two `.cloud.spec.luau` files.

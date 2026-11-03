@@ -1,5 +1,5 @@
 ---
-status: in-progress   # wired end to end in sprint 2; reviewer fixes in sprints 3–4 (start retries, stop() guard), not playtested
+status: in-progress   # wired end to end in sprint 2; reviewer fixes in sprints 3–5 (start retries, stop() guard, failed-start teardown, no restarts), not playtested
 tags: [design, mechanic]
 ---
 # Round loop
