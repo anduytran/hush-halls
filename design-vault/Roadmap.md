@@ -99,8 +99,12 @@ Sprint 16 (2026-11-03): monster hearing reviewer follow-ups (merged; spec ran in
 Sprint 17 (2026-11-03): HUD goal line (merged; client spec `Hud.cloud.spec.luau` added, not run in Studio).
 - [x] `RoundInfo.GoalText` under the timer: "Reach the EXIT. Sprinting is loud." while running, an escaped message after escaping, "Round over." at the end, and a pre-round hint otherwise.
 
+Sprint 18 (2026-11-03): HUD goal line reviewer fixes (merged; spec ran in a Studio client play-test, 8 of 8 pass, not played in a live round).
+- [x] Goal line moved into its own GoalPanel under RoundInfo, same width (160–360 px), so it clears Coins/Shop on a 375 px phone.
+- [x] All HUD connections cleaned up when the gui is destroyed; spec uses a Studio-only `Hud._test.hooks(gui)` and never writes replicated State.
+
 ## Needs a playtest
-- HUD goal line (sprint 17): text follows round state and `Escaped`, wraps cleanly and doesn't overlap other HUD panels on phone and desktop.
+- HUD goal line (sprints 17–18): text follows round state and `Escaped` in a live round; check on a real phone and desktop (simulated 375x667 layout passes; screens under ~370 px would touch the Coins column).
 - Monster hearing band (sprint 16): a player at 12–14 studs/s is heard but chased after sprinters; `Monster._test` absent on a live server.
 - Walking is silent (sprint 15): a walker at 10 studs/s is never chased, a sprinter is; check the monster still feels threatening when everyone walks.
 - VIP escape pays 20 coins, non-VIP 10 (sprint 14; needs a VIP pass ID to test the real grant).

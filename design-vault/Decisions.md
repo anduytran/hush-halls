@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 18: goal line review fixes
+- **The goal line gets its own panel under RoundInfo, capped to RoundInfo's width (160–360 px)** so it stays in the top-centre column clear of Coins/Shop on a 375 px phone. Screens under ~370 px aren't a target today. Alternative considered: keeping it as a child line inside RoundInfo; rejected because wrapped text overflowed and crowded the right column.
+
 ## 2026-11-03 — Sprint 17: HUD goal line
 - **The goal is shown as a line under the round timer** (child of RoundInfo) so new players know to reach the EXIT and that sprinting is loud, without moving other HUD elements. Alternative considered: a one-time tutorial popup; rejected as it's easy to miss and adds a screen.
 
