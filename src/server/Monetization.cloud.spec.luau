@@ -13,24 +13,18 @@
 -- Sprint-10 fix: `clock.delay` (the heartbeat's timer) only queues its callback; `fake.advance(seconds)` moves the
 -- clock and fires due timers in order. Warnings are recorded in `fake.warns` instead of printed.
 -- Sprint-11 fix: the test hooks only exist in Studio, `_test` is frozen, and the clock and warn are swapped with
--- `hooks.setClock` / `hooks.setWarn`. Outside Studio only one test runs: it checks the hooks are absent.
+-- `hooks.setClock` / `hooks.setWarn`.
+-- Sprint-12 fix: `_test` exists everywhere and is wired in Studio or by `hooks.enable()`, so every test runs on any
+-- runner, Studio or not. The spec checks the unwired state first (outside Studio), then enables the hooks.
 local RunService = game:GetService("RunService")
 local Monetization = require("./Monetization")
-local processReceipt = Monetization._processReceipt
 local hooks = Monetization._test
 local Decision = Enum.ProductPurchaseDecision
 
-if not hooks or not processReceipt then
-	-- Sprint-11 fix: outside Studio the hooks must be absent; this is the only check that runs there.
-	return {
-		["test hooks are absent outside Studio"] = function()
-			assert(not RunService:IsStudio(), "hooks are missing but RunService:IsStudio() is true")
-			assert(Monetization._processReceipt == nil, "_processReceipt must not exist outside Studio")
-			assert(Monetization._RETRY_FIRST == nil, "_RETRY_FIRST must not exist outside Studio")
-			assert(Monetization._test == nil, "_test must not exist outside Studio")
-		end,
-	}
-end
+local wiredAtLoad = hooks.enabled()
+local unwiredCallFails = not pcall(hooks.inFlight)
+hooks.enable()
+local processReceipt = hooks.processReceipt
 
 local buyer = { Name = "Tester", UserId = 1 }
 
@@ -267,6 +261,26 @@ local function statusOf(store, key)
 	return if type(held) == "table" then held.status else held
 end
 
+-- Sprint-12 fix: makes the next `failures` UpdateAsync writes whose stored value has `status` throw, like a failed
+-- DataStore call. Every write is counted by the status it would store (`state.seen`), failed or not.
+local function failWrites(store, status: string, failures: number)
+	local state = { failures = failures, seen = {} }
+	local realUpdate = store.UpdateAsync
+	function store:UpdateAsync(k, transform)
+		local probe = transform(self.data[k])
+		if type(probe) == "table" and type(probe.status) == "string" then
+			state.seen[probe.status] = (state.seen[probe.status] or 0) + 1
+			if probe.status == status and state.failures > 0 then
+				state.failures -= 1
+				self.calls += 1
+				error(`simulated {status} write failure`)
+			end
+		end
+		return realUpdate(self, k, transform)
+	end
+	return state
+end
+
 local function assertDecision(actual, expected, label)
 	assert(actual == expected, `{label}: expected {tostring(expected)}, got {tostring(actual)}`)
 end
@@ -493,6 +507,12 @@ local tests = {
 		assertDecision(processReceipt(r, store, otherGrant, buyer), Decision.NotProcessedYet, "at exactly stale")
 		assert(other.calls == 0, `must not take over before it's stale, granted {other.calls} times`)
 		fake.t += 1
+		-- Sprint-12 fix: the cap hit while our grant still ran, so this server never grants it again; only another
+		-- server (one with no gaveUp entry, simulated by clearing it) takes the stale marker over.
+		assert(hooks.gaveUp(key) and hooks.gaveUp(key).status == "done", "the cap should block the receipt as done")
+		assertDecision(processReceipt(r, store, otherGrant, buyer), Decision.NotProcessedYet, "this server, stale")
+		assert(other.calls == 0, `this server must not regrant after the cap, granted {other.calls} times`)
+		hooks.clearGaveUp()
 		assertDecision(processReceipt(r, store, otherGrant, buyer), Decision.PurchaseGranted, "after stale")
 		assert(other.calls == 1, `the stale marker should be taken over once, granted {other.calls} times`)
 		local done = store.data[key]
@@ -666,7 +686,7 @@ local tests = {
 		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
 		counter.finish()
 		assert(store.calls == 4, `expected 1 reserve and 3 done writes, saw {store.calls} UpdateAsync calls`)
-		local first = Monetization._RETRY_FIRST
+		local first = hooks.RETRY_FIRST
 		assert(
 			#fake.waits == 2 and fake.waits[1] == first and fake.waits[2] == first * 2,
 			`expected waits of {first} and {first * 2} s, got {table.concat(fake.waits, ", ")}`
@@ -741,9 +761,10 @@ local tests = {
 		local token = store.data[key].token
 		assert(hooks.gaveUp(key) == nil, "nothing is given up yet")
 		first.finish()
+		local entry = hooks.gaveUp(key)
 		assert(
-			hooks.gaveUp(key) == token,
-			`expected gaveUp[{key}] to hold our token, got {tostring(hooks.gaveUp(key))}`
+			entry and entry.token == token and entry.status == "done",
+			`expected gaveUp[{key}] to be a done entry with our token, got {tostring(entry and entry.token)}`
 		)
 		local retry, retryGrant = countingGrant(store, key)
 		local calls = store.calls
@@ -761,9 +782,16 @@ local tests = {
 		assert(otherCounter.calls == 1, `another receipt should grant once, granted {otherCounter.calls} times`)
 	end,
 
-	-- Sprint-11 fix: the hooks exist only in Studio, and the clock and warn swap through setClock / setWarn.
-	["test hooks exist in Studio and swap the clock and warn"] = function()
-		assert(RunService:IsStudio(), "the hooks should only be present in Studio")
+	-- Sprint-12 fix: one `_test` table everywhere, wired at load only in Studio, by `enable()` otherwise. The old
+	-- Studio-only surface is gone. The clock and warn swap through setClock / setWarn.
+	["test hooks: one _test table, wired in Studio or by enable()"] = function()
+		assert(Monetization._processReceipt == nil, "_processReceipt should be gone (use _test.processReceipt)")
+		assert(Monetization._RETRY_FIRST == nil, "_RETRY_FIRST should be gone (use _test.RETRY_FIRST)")
+		assert(wiredAtLoad == RunService:IsStudio(), `wired at load should match IsStudio(), was {wiredAtLoad}`)
+		if not wiredAtLoad then
+			assert(unwiredCallFails, "an unwired _test function must error")
+		end
+		assert(hooks.enabled(), "enable() should wire the hooks")
 		assert(
 			type(hooks.setClock) == "function" and type(hooks.setWarn) == "function",
 			"setClock and setWarn must exist"
@@ -785,28 +813,29 @@ local tests = {
 	-- Sprint-10 fix: onProduct and onPass register their handlers by key; onPass doesn't run it for non-owners.
 	["onProduct and onPass register their handlers"] = function()
 		local productKey, passKey = "SpecProduct", "SpecPass"
-		local oldProduct, oldPass = hooks.productHandlers[productKey], hooks.passHandlers[passKey]
+		local productHandlers, passHandlers = hooks.productHandlers(), hooks.passHandlers() -- Sprint-12 fix
+		local oldProduct, oldPass = productHandlers[productKey], passHandlers[passKey]
 		local ok, err = pcall(function()
 			local function productHandler(_player)
 				return true
 			end
 			Monetization.onProduct(productKey, productHandler)
-			assert(hooks.productHandlers[productKey] == productHandler, "onProduct should register the handler")
+			assert(productHandlers[productKey] == productHandler, "onProduct should register the handler")
 			local passRuns = 0
 			local function passHandler(_player)
 				passRuns += 1
 			end
 			Monetization.onPass(passKey, passHandler)
-			assert(hooks.passHandlers[passKey] == passHandler, "onPass should register the handler")
+			assert(passHandlers[passKey] == passHandler, "onPass should register the handler")
 			assert(passRuns == 0, `no one owns {passKey}, so its handler must not run, ran {passRuns} times`)
 			local function replacement(_player)
 				return false
 			end
 			Monetization.onProduct(productKey, replacement)
-			assert(hooks.productHandlers[productKey] == replacement, "registering again should replace the handler")
+			assert(productHandlers[productKey] == replacement, "registering again should replace the handler")
 		end)
-		hooks.productHandlers[productKey] = oldProduct
-		hooks.passHandlers[passKey] = oldPass
+		productHandlers[productKey] = oldProduct
+		passHandlers[passKey] = oldPass
 		if not ok then
 			error(err, 0)
 		end
@@ -999,8 +1028,8 @@ local tests = {
 		assertDecision(decision, Decision.NotProcessedYet, "reserve failed")
 		assert(counter.calls == 0, `nothing may be granted when the reserve fails, granted {counter.calls} times`)
 		assert(
-			fake.waits[1] == Monetization._RETRY_FIRST,
-			`expected a {Monetization._RETRY_FIRST} s wait first, got {tostring(fake.waits[1])}`
+			fake.waits[1] == hooks.RETRY_FIRST,
+			`expected a {hooks.RETRY_FIRST} s wait first, got {tostring(fake.waits[1])}`
 		)
 		assert(store.gets == 1, `expected the receipt to be read back once, got {store.gets} reads`)
 		assert(store.calls == 1, `no release should be written, saw {store.calls} UpdateAsync calls`)
@@ -1041,7 +1070,7 @@ local tests = {
 		local counter, grant = countingGrant(store, key)
 		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "reserve threw")
 		assert(counter.calls == 0, `nothing may be granted when the reserve throws, granted {counter.calls} times`)
-		assert(fake.waits[1] == Monetization._RETRY_FIRST, `expected a {Monetization._RETRY_FIRST} s wait first`)
+		assert(fake.waits[1] == hooks.RETRY_FIRST, `expected a {hooks.RETRY_FIRST} s wait first`)
 		assert(store.gets == 1, `expected the receipt to be read back once, got {store.gets} reads`)
 		assert(statusOf(store, key) == "released", `expected released, got {tostring(statusOf(store, key))}`)
 		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "retry")
@@ -1161,6 +1190,242 @@ local tests = {
 		assert(#fake.waits == 0, "the drain should not wait when nothing is in flight")
 	end,
 }
+
+-- Sprint-12 fix: receipt give-ups and the heartbeat cap, with the gaveUp block and its TTL. These run under the same
+-- wrapper as the tests above (merged into `tests` below).
+local sprint12 = {
+	-- Sprint-12 fix: a keepWriting give-up on "released" records no block. The receipt stays busy on its pending
+	-- marker until that goes stale, then it is granted once.
+	["a keepWriting give-up on released records no block; granted once the marker is stale"] = function()
+		local store = newStore()
+		local r = receipt("released-giveup")
+		local key = keyOf(r)
+		local state = failWrites(store, "released", hooks.MAX_RETRIES)
+		local counter, grant = lateGrant(false)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "refused late grant")
+		counter.finish()
+		assert(
+			state.seen.released == hooks.MAX_RETRIES,
+			`expected {hooks.MAX_RETRIES} released writes, saw {state.seen.released}`
+		)
+		assert(state.failures == 0, "every released write should have been tried and failed")
+		assert(hooks.gaveUp(key) == nil, "a given-up released write must not block the receipt")
+		assert(
+			fake.warned("gave up", key, "as released", "then it can be granted again"),
+			`expected a released give-up warning naming {key}; got:\n{table.concat(fake.warns, "\n")}`
+		)
+		local retry, retryGrant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.NotProcessedYet, "retry while busy")
+		assert(retry.calls == 0, `a busy marker must not be granted, granted {retry.calls} times`)
+		fake.t = store.data[key].at + hooks.STALE_PENDING + 1
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.PurchaseGranted, "retry once stale")
+		assert(retry.calls == 1, `expected one grant once stale, got {retry.calls}`)
+		assert(counter.calls == 1, `the refused grant should run once, ran {counter.calls} times`)
+	end,
+
+	-- Sprint-12 fix: a block recorded by the heartbeat cap while the grant ran is lifted when that same attempt's
+	-- grant gives nothing and its "released" result is written.
+	["a refused grant lifts the cap block of its own attempt when its released result is written"] = function()
+		local store = newStore()
+		local r = receipt("cap-then-refused")
+		local key = keyOf(r)
+		local counter, grant = lateGrant(false)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		local token = store.data[key].token
+		fake.advance(hooks.MAX_HEARTBEAT_AGE)
+		local entry = hooks.gaveUp(key)
+		assert(entry and entry.status == "done" and entry.token == token, "the cap should block the receipt as done")
+		counter.finish()
+		assert(hooks.gaveUp(key) == nil, "the released result should lift this attempt's block")
+		assert(statusOf(store, key) == "released", `expected released, got {tostring(statusOf(store, key))}`)
+		local retry, retryGrant = countingGrant(store, key)
+		assertDecision(
+			processReceipt(r, store, retryGrant, buyer),
+			Decision.PurchaseGranted,
+			"redelivery after refusal"
+		)
+		assert(retry.calls == 1, `expected one grant on redelivery, got {retry.calls}`)
+		assert(counter.calls == 1, `the refused grant should run once, ran {counter.calls} times`)
+	end,
+
+	-- Sprint-12 fix: the heartbeat cap hit while a yielding grant runs blocks the receipt as "done". A redelivery
+	-- is neither granted nor reserved, even once the marker is stale.
+	["the cap hit while a yielding grant runs blocks the receipt as done, even once its marker is stale"] = function()
+		local start = fake.t
+		local store = newStore()
+		local r = receipt("cap-running")
+		local key = keyOf(r)
+		local counter, grant = lateGrant(true)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		fake.advance(hooks.MAX_HEARTBEAT_AGE)
+		local entry = hooks.gaveUp(key)
+		assert(
+			entry and entry.status == "done",
+			`expected a done block at the cap, got {tostring(entry and entry.status)}`
+		)
+		assert(entry.at == start + hooks.MAX_HEARTBEAT_AGE, `expected the block at +1800 s, was +{entry.at - start} s`)
+		assert(
+			store.data[key].at == start + hooks.MAX_HEARTBEAT_AGE,
+			`the last refresh should be at reserve + 1800 s, was +{store.data[key].at - start} s`
+		)
+		assert(fake.warnCount("stopped refreshing", key) == 1, `expected one stop warning for {key}`)
+		local retry, retryGrant = countingGrant(store, key)
+		local calls = store.calls
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.NotProcessedYet, "retry at the cap")
+		fake.t = store.data[key].at + hooks.STALE_PENDING + 1
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.NotProcessedYet, "retry once stale")
+		assert(retry.calls == 0, `a blocked receipt must not be granted, granted {retry.calls} times`)
+		assert(store.calls == calls, `a blocked receipt must not be reserved, saw {store.calls - calls} calls`)
+		counter.finish()
+		assert(statusOf(store, key) == "done", `expected done, got {tostring(statusOf(store, key))}`)
+		assert(counter.calls == 1, `the grant should run once, ran {counter.calls} times`)
+	end,
+
+	-- Sprint-12 fix: the heartbeat cap hit while a done write is retried in keepWriting blocks the receipt as done.
+	-- Retries wait on the clock, so the test steps them with fake.advance.
+	["the cap hit while a late done write is retried blocks the receipt as done, and keeps that time"] = function()
+		local start = fake.t
+		local store = newStore()
+		local r = receipt("cap-retrying")
+		local key = keyOf(r)
+		local counter, grant = lateGrant(true)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		local token = store.data[key].token
+		fake.advance(1700)
+		local state = failWrites(store, "done", hooks.MAX_RETRIES)
+		useTimedWait()
+		counter.finish()
+		-- keepWriting's heartbeat starts at +1700 and beats at +1760, where the next beat would pass the cap.
+		fake.advance(hooks.HEARTBEAT)
+		local capAt = start + 1700 + hooks.HEARTBEAT
+		local entry = hooks.gaveUp(key)
+		assert(entry and entry.status == "done" and entry.token == token, "the cap should block the receipt as done")
+		assert(entry.at == capAt, `expected the block at +{capAt - start} s, was +{entry.at - start} s`)
+		fake.advance(hooks.MAX_HEARTBEAT_AGE) -- the done retries run out about 122 s after +1700
+		assert(state.seen.done == hooks.MAX_RETRIES, `expected {hooks.MAX_RETRIES} done writes, saw {state.seen.done}`)
+		assert(state.failures == 0, "every done write should have been tried and failed")
+		assert(fake.warned("gave up", key, "as done"), `expected a done give-up warning naming {key}`)
+		assert(fake.warnCount("stopped refreshing", key) == 1, "one stop warning for this attempt")
+		local later = hooks.gaveUp(key)
+		assert(later and later.at == capAt, "the give-up must not move the block's time")
+		assert(store.data[key].at == capAt, "the last refresh should be the capped beat")
+		fake.t = store.data[key].at + hooks.STALE_PENDING + 1
+		local retry, retryGrant = countingGrant(store, key)
+		local calls = store.calls
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.NotProcessedYet, "retry once stale")
+		assert(retry.calls == 0, `a blocked receipt must not be granted, granted {retry.calls} times`)
+		assert(store.calls == calls, `a blocked receipt must not be reserved, saw {store.calls - calls} calls`)
+	end,
+
+	-- Sprint-12 fix: a keepWriting that starts after the cap window does not beat, and blocks the receipt as done
+	-- from that moment. The window counts from the reserve, not from the grant's end.
+	["a keepWriting started after the window does not refresh and blocks the receipt from then"] = function()
+		local start = fake.t
+		local store = newStore()
+		local r = receipt("late-window")
+		local key = keyOf(r)
+		local counter, grant = lateGrant(true)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		fake.advance(1790)
+		assert(
+			store.data[key].at == start + 1740,
+			`expected the last refresh at +1740 s, was +{store.data[key].at - start} s`
+		)
+		local state = failWrites(store, "done", hooks.MAX_RETRIES)
+		counter.finish()
+		assert(
+			state.seen.pending == nil,
+			`a keepWriting after the window must not refresh, saw {state.seen.pending} refresh(es)`
+		)
+		assert(store.data[key].at == start + 1740, "nothing should refresh the marker after the window")
+		local entry = hooks.gaveUp(key)
+		assert(entry and entry.status == "done" and entry.at == start + 1790, "the block should start at +1790 s")
+		assert(fake.warnCount("stopped refreshing", key) == 1, "one stop warning for this attempt")
+		fake.t = store.data[key].at + hooks.STALE_PENDING + 1
+		local retry, retryGrant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.NotProcessedYet, "retry once stale")
+		assert(retry.calls == 0, `a blocked receipt must not be granted, granted {retry.calls} times`)
+	end,
+
+	-- Sprint-12 fix: the stop warning appears once per attempt. A keepWriting that hits the cap again keeps the
+	-- first block's time and warns nothing new.
+	["the stop warning appears once per attempt, even when keepWriting hits the cap again"] = function()
+		local start = fake.t
+		local store = newStore()
+		local r = receipt("warn-once")
+		local key = keyOf(r)
+		local counter, grant = lateGrant(true)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		fake.advance(hooks.MAX_HEARTBEAT_AGE)
+		assert(fake.warnCount("stopped refreshing", key) == 1, "the first cap should warn once")
+		fake.advance(200) -- the grant runs on past the cap
+		local state = failWrites(store, "done", hooks.MAX_RETRIES)
+		counter.finish()
+		assert(
+			fake.warnCount("stopped refreshing", key) == 1,
+			`expected one stop warning for this attempt, got {fake.warnCount("stopped refreshing", key)}`
+		)
+		assert(
+			fake.warnCount("gave up", key) == 1,
+			`expected one give-up warning, got {fake.warnCount("gave up", key)}`
+		)
+		assert(state.seen.done == hooks.MAX_RETRIES, `expected {hooks.MAX_RETRIES} done writes, saw {state.seen.done}`)
+		local entry = hooks.gaveUp(key)
+		assert(
+			entry and entry.status == "done" and entry.at == start + hooks.MAX_HEARTBEAT_AGE,
+			"the block should keep the first cap's time, +1800 s"
+		)
+	end,
+
+	-- Sprint-12 fix: a cap block lasts exactly GAVE_UP_TTL after it was recorded (still blocked at that instant).
+	-- One second later the receipt is reserved normally and the entry is removed.
+	["a cap block expires exactly GAVE_UP_TTL after it was recorded, then the receipt is reserved again"] = function()
+		assert(hooks.GAVE_UP_TTL == 88200, `expected GAVE_UP_TTL of 88200 s, got {hooks.GAVE_UP_TTL}`)
+		local store = newStore()
+		local r = receipt("ttl")
+		local key = keyOf(r)
+		local first, firstGrant = lateGrant(true)
+		assertDecision(processReceipt(r, store, firstGrant, buyer), Decision.NotProcessedYet, "yielding handler")
+		fake.advance(hooks.MAX_HEARTBEAT_AGE)
+		local entry = hooks.gaveUp(key)
+		assert(entry and entry.status == "done", "the cap should block the receipt as done")
+		local retry, retryGrant = countingGrant(store, key)
+		fake.t = entry.at + hooks.GAVE_UP_TTL
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.NotProcessedYet, "exactly GAVE_UP_TTL")
+		assert(retry.calls == 0, `exactly at GAVE_UP_TTL the block holds, granted {retry.calls} times`)
+		assert(hooks.gaveUp(key) ~= nil, "the block should still be there at exactly GAVE_UP_TTL")
+		fake.t += 1
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.PurchaseGranted, "GAVE_UP_TTL + 1")
+		assert(retry.calls == 1, `expected one grant after the block expired, got {retry.calls}`)
+		assert(hooks.gaveUp(key) == nil, "the expired block should be removed")
+		first.finish()
+		assert(first.calls == 1, `the first grant should run once, ran {first.calls} times`)
+	end,
+
+	-- Sprint-12 fix: a late done write that lands clears the cap block. A redelivery then gets PurchaseGranted
+	-- (the store holds done), and the receipt is not granted again.
+	["a late done write that lands clears the block; redelivery is PurchaseGranted, not granted again"] = function()
+		local store = newStore()
+		local r = receipt("late-lands")
+		local key = keyOf(r)
+		local first, firstGrant = lateGrant(true)
+		assertDecision(processReceipt(r, store, firstGrant, buyer), Decision.NotProcessedYet, "yielding handler")
+		fake.advance(hooks.MAX_HEARTBEAT_AGE)
+		assert(hooks.gaveUp(key) ~= nil, "the cap should block the receipt")
+		local state = failWrites(store, "done", 1)
+		first.finish()
+		assert(state.failures == 0, "the done write should have failed once and then landed")
+		assert(hooks.gaveUp(key) == nil, "a landed done write should clear the block")
+		assert(statusOf(store, key) == "done", `expected done, got {tostring(statusOf(store, key))}`)
+		local retry, retryGrant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, retryGrant, buyer), Decision.PurchaseGranted, "redelivery")
+		assert(retry.calls == 0, `a receipt already given must not be granted again, granted {retry.calls} times`)
+		assert(first.calls == 1, `exactly one grant in total, got {first.calls}`)
+	end,
+}
+for name, test in sprint12 do
+	tests[name] = test
+end
 
 -- Sprint-9 fix: every test runs on a fresh fake clock, which is put back afterwards, and must not leave any
 -- write or grant in flight.

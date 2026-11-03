@@ -23,6 +23,9 @@
 -- Sprint-11 fix: a heartbeat stops after MAX_HEARTBEAT_AGE (with one warn), so a handler that never returns lets its
 -- marker go stale like a dead server's. The restamp happens once per marker (`restamped = true`). A receipt whose
 -- result write was given up on is never granted again by this server (`gaveUp`).
+-- Sprint-12 fix: only a given-up "done" blocks (a given-up "released" gave nothing). The heartbeat cap counts from
+-- the attempt's reserve, one MAX_HEARTBEAT_AGE window shared by the grant and its result write; if the cap is hit
+-- while the grant runs or its done write is pending, the receipt is blocked too. Blocks expire after GAVE_UP_TTL.
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
@@ -48,6 +51,8 @@ local SHUTDOWN_WAIT = 20
 local HEARTBEAT = 60
 -- Sprint-11 fix: a heartbeat refreshes for at most this many seconds in total, then stops (with one warn).
 local MAX_HEARTBEAT_AGE = 1800
+-- Sprint-12 fix: a gaveUp entry blocks its receipt for this many seconds after it was recorded, then expires.
+local GAVE_UP_TTL = STALE_PENDING + MAX_HEARTBEAT_AGE
 
 type Clock = {
 	now: () -> number,
@@ -79,6 +84,18 @@ local log = { warn = realWarn }
 type PassHandler = (player: Player) -> ()
 type ProductHandler = (player: Player) -> boolean
 type Receipt = { PlayerId: number, PurchaseId: string, ProductId: number }
+-- Sprint-12 fix: one try at a receipt, from its reserve to its final write. The heartbeat window starts at
+-- `reservedAt`; `capped` is set once the heartbeat cap is hit, so it warns only once per attempt.
+type Attempt = {
+	store: DataStore,
+	key: string,
+	token: string,
+	purchaseId: string,
+	reservedAt: number,
+	capped: boolean,
+}
+-- Sprint-12 fix: a receipt this server must not grant again, the attempt that blocked it, and since when.
+type GaveUp = { status: "done", token: string, at: number }
 
 local passHandlers: { [string]: PassHandler } = {}
 local productHandlers: { [string]: ProductHandler } = {}
@@ -90,7 +107,26 @@ local processing: { [string]: boolean } = {}
 local inFlight = 0
 -- Sprint-11 fix: receipt keys whose result keepWriting gave up on, with the token of the attempt that gave up.
 -- This server never grants them again (it may already have), whatever the store says later.
-local gaveUp: { [string]: string } = {}
+-- Sprint-12 fix: only for a "done" result (or a grant still running at the heartbeat cap), and for GAVE_UP_TTL.
+local gaveUp: { [string]: GaveUp } = {}
+
+-- Sprint-12 fix: blocks this attempt's receipt on this server. Keeps the first time recorded, so it can't be extended.
+local function recordGaveUp(attempt: Attempt)
+	local entry = gaveUp[attempt.key]
+	if entry and entry.token == attempt.token then
+		return
+	end
+	gaveUp[attempt.key] = { status = "done", token = attempt.token, at = clock.now() }
+end
+
+-- Sprint-12 fix: lifts this attempt's block once the store holds its result, or once its grant is known to have
+-- given nothing.
+local function clearGaveUp(attempt: Attempt)
+	local entry = gaveUp[attempt.key]
+	if entry and entry.token == attempt.token then
+		gaveUp[attempt.key] = nil
+	end
+end
 
 local function getHistory(): DataStore?
 	if history then
@@ -232,32 +268,43 @@ end
 -- called, or the marker is no longer our pending one. Never yields; each beat runs in a task of its own.
 -- Sprint-11 fix: it also stops (warning once) once a next beat would come more than MAX_HEARTBEAT_AGE seconds after
 -- it started. The marker then goes stale STALE_PENDING after its last refresh, like a dead server's.
-local function startHeartbeat(store: DataStore, receiptKey: string, token: string): () -> ()
+-- Sprint-12 fix: the window counts from the attempt's reserve, so the grant's heartbeat and keepWriting's share one
+-- MAX_HEARTBEAT_AGE window per attempt. When the cap is hit (or already was), it calls `onCap`.
+local function startHeartbeat(attempt: Attempt, onCap: () -> ()): () -> ()
 	local beating = true
-	local started = clock.now()
+	local function overCap(): boolean
+		if clock.now() + HEARTBEAT - attempt.reservedAt <= MAX_HEARTBEAT_AGE then
+			return false
+		end
+		beating = false
+		if not attempt.capped then
+			attempt.capped = true
+			log.warn(
+				`[Monetization] stopped refreshing pending marker {attempt.key} after {MAX_HEARTBEAT_AGE} s;`
+					.. ` it goes stale {STALE_PENDING} s after its last refresh.`
+			)
+		end
+		onCap()
+		return true
+	end
 	local function beat()
 		if not beating then
 			return
 		end
-		local fresh = { status = "pending", at = clock.now(), token = token }
-		local ok, wasOurs = writeOverOurs(store, receiptKey, token, fresh, true)
+		local fresh = { status = "pending", at = clock.now(), token = attempt.token }
+		local ok, wasOurs = writeOverOurs(attempt.store, attempt.key, attempt.token, fresh, true)
 		if ok and not wasOurs then
 			beating = false -- our marker is gone or final: nothing left to keep alive
 		elseif not ok then
-			log.warn(`[Monetization] couldn't refresh pending marker {receiptKey}, trying again later: {wasOurs}`)
+			log.warn(`[Monetization] couldn't refresh pending marker {attempt.key}, trying again later: {wasOurs}`)
 		end
-		if beating and clock.now() + HEARTBEAT - started > MAX_HEARTBEAT_AGE then
-			beating = false -- Sprint-11 fix
-			log.warn(
-				`[Monetization] stopped refreshing pending marker {receiptKey} after {MAX_HEARTBEAT_AGE} s;`
-					.. ` it goes stale {STALE_PENDING} s after its last refresh.`
-			)
-		end
-		if beating then
+		if beating and not overCap() then
 			clock.delay(HEARTBEAT, beat)
 		end
 	end
-	clock.delay(HEARTBEAT, beat)
+	if not overCap() then
+		clock.delay(HEARTBEAT, beat)
+	end
 	return function()
 		beating = false
 	end
@@ -267,31 +314,46 @@ end
 -- Yields, so it runs from the handler's task or a task of its own, never on ProcessReceipt's own path.
 -- Sprint-9 fix: gives up with a warn after MAX_RETRIES attempts, and counts as in flight while it runs.
 -- Sprint-10 fix: keeps our pending marker alive with a heartbeat while it retries.
-local function keepWriting(store: DataStore, receiptKey: string, token: string, final: any, purchaseId: string)
+-- Sprint-12 fix: a "released" result gave nothing, so it lifts this attempt's block and its give-up blocks nothing.
+-- A "done" result blocks the receipt if it's given up on or the heartbeat cap is hit, until it lands over our marker.
+local function keepWriting(attempt: Attempt, final: any)
 	inFlight += 1
-	local stopHeartbeat = startHeartbeat(store, receiptKey, token)
+	local writingDone = final.status == "done"
+	if not writingDone then
+		clearGaveUp(attempt)
+	end
+	local stopHeartbeat = startHeartbeat(attempt, function()
+		if writingDone then
+			recordGaveUp(attempt)
+		end
+	end)
 	local delay = RETRY_FIRST
-	for attempt = 1, MAX_RETRIES do
-		local ok, wasOurs = writeOverOurs(store, receiptKey, token, final)
+	for try = 1, MAX_RETRIES do
+		local ok, wasOurs = writeOverOurs(attempt.store, attempt.key, attempt.token, final)
 		if ok then
-			if not wasOurs then
-				log.warn(`[Monetization] purchase {purchaseId} doesn't hold our marker; wrote nothing`)
+			if wasOurs then
+				clearGaveUp(attempt) -- Sprint-12 fix: the store holds our result now
+			else
+				log.warn(`[Monetization] purchase {attempt.purchaseId} doesn't hold our marker; wrote nothing`)
 			end
 			break
 		end
-		if attempt == MAX_RETRIES then
-			-- Sprint-11 fix: this server never grants this receipt again.
-			gaveUp[receiptKey] = token
+		if try == MAX_RETRIES then
+			-- Sprint-11 fix: this server never grants this receipt again. Sprint-12 fix: only if it was given.
+			if writingDone then
+				recordGaveUp(attempt)
+			end
 			-- Sprint-10 fix: name the receipt key, and say what happens to it now.
 			log.warn(
-				`[Monetization] gave up recording purchase {purchaseId} (receipt {receiptKey}) as {final.status}`
+				`[Monetization] gave up recording purchase {attempt.purchaseId} (receipt {attempt.key}) as {final.status}`
 					.. ` after {MAX_RETRIES} attempts: {wasOurs}. It stays pending (NotProcessedYet) until it goes`
-					.. ` stale, {STALE_PENDING} s after its last heartbeat; this server won't grant it again.`
+					.. ` stale, {STALE_PENDING} s after its last heartbeat; `
+					.. (if writingDone then "this server won't grant it again." else "then it can be granted again.")
 			)
 			break
 		end
 		log.warn(
-			`[Monetization] couldn't record purchase {purchaseId} as {final.status}, retrying in {delay} s: {wasOurs}`
+			`[Monetization] couldn't record purchase {attempt.purchaseId} as {final.status}, retrying in {delay} s: {wasOurs}`
 		)
 		clock.wait(delay)
 		delay = math.min(delay * 2, RETRY_MAX)
@@ -303,17 +365,17 @@ end
 -- Sprint-9 fix: after a failed reserve, wait RETRY_FIRST, read the receipt back, and release it only if it holds
 -- our token (the reserve's write landed before the error). If the read fails too, release anyway: keepWriting
 -- only ever writes over our own token, so that can't touch another attempt's marker.
-local function releaseIfOurs(store: DataStore, receiptKey: string, token: string, final: any, purchaseId: string)
+local function releaseIfOurs(attempt: Attempt, final: any)
 	inFlight += 1
 	clock.wait(RETRY_FIRST)
 	local ok, value = pcall(function()
-		return store:GetAsync(receiptKey)
+		return attempt.store:GetAsync(attempt.key)
 	end)
 	if not ok then
-		log.warn(`[Monetization] couldn't read purchase {purchaseId} after a failed reserve: {value}`)
+		log.warn(`[Monetization] couldn't read purchase {attempt.purchaseId} after a failed reserve: {value}`)
 	end
-	if not ok or isOurs(value, token) then
-		keepWriting(store, receiptKey, token, final, purchaseId)
+	if not ok or isOurs(value, attempt.token) then
+		keepWriting(attempt, final)
 	end
 	inFlight -= 1
 end
@@ -360,10 +422,22 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	local receiptKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
 	local purchaseId = receipt.PurchaseId
 	-- Sprint-11 fix: we gave up writing this receipt's result, so it may already be given: never grant it again here.
-	if gaveUp[receiptKey] then
+	-- Sprint-12 fix: only a "done" give-up blocks, and only until GAVE_UP_TTL after it was recorded.
+	local blocked = gaveUp[receiptKey]
+	if blocked and clock.now() - blocked.at > GAVE_UP_TTL then
+		gaveUp[receiptKey] = nil
+	elseif blocked and blocked.status == "done" then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 	local token = HttpService:GenerateGUID(false)
+	local attempt: Attempt = {
+		store = store,
+		key = receiptKey,
+		token = token,
+		purchaseId = purchaseId,
+		reservedAt = clock.now(),
+		capped = false,
+	}
 	local function marker(status: string)
 		return { status = status, at = clock.now(), token = token }
 	end
@@ -397,7 +471,7 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 		-- Sprint-8 fix: the write may have landed before the error. Nothing was granted, so release our marker
 		-- if it's there: it would otherwise block the purchase until it goes stale.
 		-- Sprint-9 fix: not blindly: wait, read it back, and release only if it holds our token.
-		task.spawn(releaseIfOurs, store, receiptKey, token, marker("released"), purchaseId)
+		task.spawn(releaseIfOurs, attempt, marker("released"))
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 	if status == "done" then
@@ -415,16 +489,20 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	local finished, grantOk, given = runGrant(grant, buyer, function(lateOk, lateGiven)
 		stopHeartbeat()
 		if lateOk and lateGiven == true then
-			keepWriting(store, receiptKey, token, marker("done"), purchaseId)
+			keepWriting(attempt, marker("done"))
 			return
 		end
 		if not lateOk then
 			log.warn(`[Monetization] yielding handler failed late for purchase {purchaseId}: {lateGiven}`)
 		end
-		keepWriting(store, receiptKey, token, marker("released"), purchaseId)
+		keepWriting(attempt, marker("released"))
 	end)
 	if not finished then
-		stopHeartbeat = startHeartbeat(store, receiptKey, token) -- Sprint-10 fix
+		-- Sprint-10 fix. Sprint-12 fix: if the cap is hit while the grant still runs, it may yet give the product,
+		-- so this server blocks the receipt (as done) from then on.
+		stopHeartbeat = startHeartbeat(attempt, function()
+			recordGaveUp(attempt)
+		end)
 		log.warn(
 			`[Monetization] handler for purchase {purchaseId} yielded; product handlers should not yield.`
 				.. " Answering NotProcessedYet until it finishes."
@@ -442,7 +520,7 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 		local releaseOk, releaseErr = writeOverOurs(store, receiptKey, token, released)
 		if not releaseOk then
 			log.warn(`[Monetization] couldn't release purchase {purchaseId}, retrying: {releaseErr}`)
-			task.spawn(keepWriting, store, receiptKey, token, released, purchaseId)
+			task.spawn(keepWriting, attempt, released)
 		end
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
@@ -452,7 +530,7 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	if not doneOk then
 		-- It was given, so tell Roblox it's done rather than risk giving it again, and keep trying to record it.
 		log.warn(`[Monetization] granted purchase {purchaseId} but couldn't record it yet, retrying: {wasOurs}`)
-		task.spawn(keepWriting, store, receiptKey, token, done, purchaseId)
+		task.spawn(keepWriting, attempt, done)
 	elseif not wasOurs then
 		-- Sprint-8 fix: nothing else replaces our marker, so the store was changed by hand. It was given anyway.
 		log.warn(`[Monetization] purchase {purchaseId} was granted but no longer holds our marker`)
@@ -478,49 +556,68 @@ game:BindToClose(function()
 	end
 end)
 
--- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync, GetAsync) and handler, and read
--- the first retry delay.
--- Sprint-11 fix: only in Studio, so live servers never expose them. `_test` is frozen; the clock and warn are
--- swapped through its setters.
-if RunService:IsStudio() then
-	Monetization._processReceipt = processReceipt
-	Monetization._RETRY_FIRST = RETRY_FIRST
-	-- Sprint-9 fix: specs use a fake clock, so they never really wait, and read the limits and in-flight count.
-	Monetization._test = table.freeze({
-		STALE_PENDING = STALE_PENDING,
-		MAX_RETRIES = MAX_RETRIES,
-		SHUTDOWN_WAIT = SHUTDOWN_WAIT,
-		-- Sprint-10 fix: specs read the heartbeat and the registered handlers too.
-		HEARTBEAT = HEARTBEAT,
-		MAX_HEARTBEAT_AGE = MAX_HEARTBEAT_AGE, -- Sprint-11 fix
-		passHandlers = passHandlers,
-		productHandlers = productHandlers,
-		drain = drain,
-		inFlight = function(): number
-			return inFlight
-		end,
-		-- Sprint-11 fix: replaces the clock's now/wait/delay with the given ones (missing ones are the real ones).
-		-- `nil` puts the real clock back.
-		setClock = function(
-			fake: { now: (() -> number)?, wait: ((number) -> ())?, delay: ((number, () -> ()) -> ())? }?
-		)
+-- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync, GetAsync) and handler on a fake
+-- clock, and read the limits and in-flight count. `_test` is frozen.
+-- Sprint-12 fix: `_test` exists everywhere (the Studio-only `_processReceipt` / `_RETRY_FIRST` are gone), so the
+-- spec runs on any test runner. Its functions only work once wired: in Studio, or after `_test.enable()`; unwired
+-- they error, so a live server never runs them by accident. The limits can always be read.
+local testWired = RunService:IsStudio()
+local function wired(name: string, fn: any): any
+	return function(...)
+		if not testWired then
+			error(`[Monetization] _test.{name} is off outside Studio; call Monetization._test.enable() first`, 2)
+		end
+		return fn(...)
+	end
+end
+Monetization._test = table.freeze({
+	enable = function()
+		testWired = true
+	end,
+	enabled = function(): boolean
+		return testWired
+	end,
+	RETRY_FIRST = RETRY_FIRST,
+	STALE_PENDING = STALE_PENDING,
+	MAX_RETRIES = MAX_RETRIES,
+	SHUTDOWN_WAIT = SHUTDOWN_WAIT,
+	HEARTBEAT = HEARTBEAT,
+	MAX_HEARTBEAT_AGE = MAX_HEARTBEAT_AGE,
+	GAVE_UP_TTL = GAVE_UP_TTL,
+	processReceipt = wired("processReceipt", processReceipt),
+	passHandlers = wired("passHandlers", function()
+		return passHandlers
+	end),
+	productHandlers = wired("productHandlers", function()
+		return productHandlers
+	end),
+	drain = wired("drain", drain),
+	inFlight = wired("inFlight", function(): number
+		return inFlight
+	end),
+	-- Replaces the clock's now/wait/delay with the given ones (missing ones are the real ones); `nil` puts the real
+	-- clock back.
+	setClock = wired(
+		"setClock",
+		function(fake: { now: (() -> number)?, wait: ((number) -> ())?, delay: ((number, () -> ()) -> ())? }?)
 			clock.now = (fake and fake.now) or realClock.now
 			clock.wait = (fake and fake.wait) or realClock.wait
 			clock.delay = (fake and fake.delay) or realClock.delay
-		end,
-		-- Sprint-11 fix: replaces where warnings go; `nil` puts the real warn back.
-		setWarn = function(fakeWarn: ((string) -> ())?)
-			log.warn = fakeWarn or realWarn
-		end,
-		-- Sprint-11 fix: the token of the attempt that gave up on `receiptKey`, if any, and a reset for specs.
-		gaveUp = function(receiptKey: string): string?
-			return gaveUp[receiptKey]
-		end,
-		clearGaveUp = function()
-			table.clear(gaveUp)
-		end,
-	})
-end
+		end
+	),
+	-- Replaces where warnings go; `nil` puts the real warn back.
+	setWarn = wired("setWarn", function(fakeWarn: ((string) -> ())?)
+		log.warn = fakeWarn or realWarn
+	end),
+	-- A copy of the block on `receiptKey` ({status, token, at}), if any, and a reset for specs.
+	gaveUp = wired("gaveUp", function(receiptKey: string): GaveUp?
+		local entry = gaveUp[receiptKey]
+		return if entry then table.clone(entry) else nil
+	end),
+	clearGaveUp = wired("clearGaveUp", function()
+		table.clear(gaveUp)
+	end),
+})
 
 MarketplaceService.ProcessReceipt = function(receipt)
 	local key = keyFor(Products.Products, receipt.ProductId)
