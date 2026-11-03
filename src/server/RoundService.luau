@@ -363,14 +363,17 @@ function RoundService.start()
 				while next(pending) ~= nil and os.clock() < spawnDeadline do
 					task.wait(0.1)
 				end
-				-- Sprint 23 fix: anyone still spawning at the deadline is dropped from the round, so they can't hold
-				-- it open or be put at Start mid-round when their spawn finishes. They spectate like a late joiner.
+				-- Gameplay fix (not a test hook): anyone still spawning at the deadline is dropped from the round, so
+				-- they can't hold it open or be put at Start mid-round when their spawn finishes. They spectate like
+				-- a late joiner.
 				for player in pending do
 					participants[player] = nil
 					if player.Parent == Players then
 						report(
 							`[RoundService] spawning {player.Name} took over {SPAWN_TIMEOUT}s; they spectate this round`
 						)
+					else
+						report(`[RoundService] {player.Name} left the server while spawning; dropped from the round`)
 					end
 				end
 				spawning = false

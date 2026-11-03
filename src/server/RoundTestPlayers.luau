@@ -43,6 +43,8 @@ local exitHandler: { connection: RBXScriptConnection, onTouched: (BasePart) -> (
 -- (it yields until released or the stand-in is removed).
 local failsLeft: { [FakePlayer]: number } = {}
 local held: { [FakePlayer]: boolean } = {}
+-- Fired whenever a hold is released or a stand-in is removed, so a held load wakes up without polling.
+local holdChanged = Instance.new("BindableEvent")
 -- Sprint 23: set by _test.pretendLiveServer, so a Studio spec can check that attach() refuses outside Studio. It can
 -- only make the check stricter: a server that isn't Studio is refused whatever this is.
 local pretendLive = false
@@ -152,7 +154,7 @@ function RoundTestPlayers.add(name: string): FakePlayer
 			end
 			-- A held load keeps the old character until it is released; a stand-in removed meanwhile gets none.
 			while held[self] and fakes[self] do
-				RunService.Heartbeat:Wait()
+				holdChanged.Event:Wait()
 			end
 			if not fakes[self] then
 				return
@@ -200,6 +202,7 @@ function RoundTestPlayers.removeAll()
 		end
 		fake.Parent = nil
 		folder:Destroy()
+		holdChanged:Fire()
 	end
 end
 
@@ -223,6 +226,9 @@ end
 -- Releasing it lets any waiting load finish and make the new character.
 function RoundTestPlayers.holdLoadCharacter(fake: FakePlayer, hold: boolean)
 	held[fake] = if hold then true else nil
+	if not hold then
+		holdChanged:Fire()
+	end
 end
 
 -- Sprint 23: kills the stand-in's character (Humanoid.Health = 0), as the monster would. False if it has none.

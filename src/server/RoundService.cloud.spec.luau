@@ -840,6 +840,40 @@ local tests = {
 		waitForState("Ended", 15)
 	end,
 
+	-- Sprint 24: LoadCharacter errors on all 3 tries. The fake has no character to fall back on, so it is dropped
+	-- from the round: one warning per try (3), never InRound, and it watches from the platform while the other
+	-- fake plays.
+	["LoadCharacter failing on every try drops the player, who spectates"] = function()
+		if fakeRoundSkipped("LoadCharacter failing on all tries") then
+			return
+		end
+		RoundService._test.setDurations(1, 2, 1)
+		local failing = RoundTestPlayers.add("SpecLoadFailsAll")
+		local other = RoundTestPlayers.add("SpecOther")
+		-- Drop the character add() gave it: a failed spawn keeps an existing body, and this test wants none.
+		if failing.Character then
+			failing.Character:Destroy()
+			failing.Character = nil
+		end
+		RoundTestPlayers.failLoadCharacter(failing, 3)
+		RoundService.start()
+
+		local warnings = collectWarnings(function()
+			waitForState("Running", 15)
+		end)
+		assert(#warnings == 3, `expected 3 warnings, got {#warnings}: {table.concat(warnings, " | ")}`)
+		for _, warning in warnings do
+			assert(
+				string.find(warning, failing.Name, 1, true),
+				`every warning should name {failing.Name}, got: {warning}`
+			)
+		end
+		assert(other:GetAttribute("InRound") == true, "the other player should be InRound when Running begins")
+		assert(failing:GetAttribute("InRound") ~= true, "the player whose spawns all failed must not be InRound")
+		assert(failing.Character == nil, "the player should still have no character")
+		waitForState("Ended", 15)
+	end,
+
 	-- Sprint 23: one fake's spawn outlasts the 10s spawn wait. Running begins anyway, the stuck fake is dropped from
 	-- the round and watches from the platform; when its spawn finally finishes it stays a spectator (never InRound,
 	-- never at Start) while the other fake plays the round out. Exactly one warning (the timeout) is reported.
