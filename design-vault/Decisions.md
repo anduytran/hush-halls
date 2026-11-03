@@ -2,6 +2,12 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 6: reviewer follow-ups
+- **Grant handlers must not yield.** The grant runs synchronously right after the token check; a handler that yields is stopped and counts as failed. This closes sprint 5's accepted double-grant gap.
+- **Stale-takeover window raised to 600 s** (from 120 s). A live attempt now only holds the marker across two DataStore calls, so a wide margin costs little.
+- **Teleport-sized steps are clamped to sprint speed again**, entry kept. Sprint 5's reset to 0 let a sprinter go silent by teleporting.
+- **`RoundService.start()` runs each setup step in its own pcall** so the error names the step that failed.
+
 ## 2026-11-03 — Sprint 5: reviewer follow-ups
 - **Receipt markers carry a per-attempt token.** Grant only when the store holds our token; mark done only over our own marker. Accepted limit: a handler yielding past 120 s while another server takes over can still double-grant, since grant and done-write can't be atomic.
 - **Teleport-sized steps reset the speed reading to 0** (like a respawn), replacing sprint 4's cap at sprint speed. Reviewer's call.

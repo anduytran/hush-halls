@@ -1,5 +1,5 @@
 ---
-status: in-progress   # receipts hardened in sprint 2, sprint 4 reserve → grant → mark done (grant outside UpdateAsync), sprint 5 per-attempt tokens, blocked on Creator Hub IDs
+status: in-progress   # receipts hardened in sprint 2, sprint 4 reserve → grant → mark done (grant outside UpdateAsync), sprint 5 per-attempt tokens, sprint 6 grants can't yield + 600 s stale window, blocked on Creator Hub IDs
 tags: [design, mechanic]
 ---
 # Products and grants

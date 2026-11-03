@@ -1,5 +1,5 @@
 ---
-status: in-progress   # InRound-only noise/drowning in sprint 2; per-step teleport filter in sprint 3; teleport steps reset the reading to 0 in sprint 5 (was capped in sprint 4), not playtested
+status: in-progress   # InRound-only noise/drowning in sprint 2; per-step teleport filter in sprint 3; teleport steps clamped to sprint speed and kept in sprint 6 (sprint 5 reset to 0, which let sprinters go silent), not playtested
 tags: [design, mechanic]
 ---
 # Sprint, noise and water

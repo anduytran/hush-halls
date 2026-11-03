@@ -37,12 +37,20 @@ Sprint 5 (2026-11-03): five sprint-4 reviewer follow-ups (merged; checks pass, n
 - [x] Receipts: each attempt's pending marker carries its own token; it grants only if the store holds that token, and marks done only over its own marker. Known limit: a handler that yields past 120 s while another server takes over can still double-grant.
 - [x] `main.server.luau`: a system that started once is never started again by the retry loop.
 - [x] `RoundService`: a failed `start()` undoes what it set up; `stop()` also clears the platform. Test hooks moved into `RoundService._test`.
-- [x] SpeedSampler: a single step over 40 studs now resets the player's entry (reading 0, like a respawn) instead of being capped.
+- [x] SpeedSampler: a single step over 40 studs now resets the player's entry (reading 0, like a respawn) instead of being capped. (Replaced in sprint 6.)
 - [x] Specs updated: `Monetization.cloud.spec.luau`, `RoundService.cloud.spec.luau`, `SpeedSampler.spec.luau`.
 
+Sprint 6 (2026-11-03): five sprint-5 reviewer follow-ups (merged; scripter reports checks pass, not run in a live round).
+- [x] Receipts: the grant handler runs synchronously right after the token check; a handler that yields is stopped and counts as failed. Stale-takeover window raised from 120 s to 600 s. This closes sprint 5's known double-grant gap.
+- [x] SpeedSampler: a step over 40 studs is clamped to sprint speed and the entry kept, so a sprinter can't go silent by teleporting (reverses sprint 5's reset to 0).
+- [x] `RoundService.start()`: each setup step runs in its own pcall; the error names the failing step, with the same rollback.
+- [x] `RoundService.cloud.spec.luau`: every test starts from fresh state and cleans up after itself.
+- [x] Specs updated for all three files.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–5.
-- Run `Monetization.cloud.spec.luau` (sprint 5 token receipt flow).
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–6.
+- Run `Monetization.cloud.spec.luau` (sprint 6: yielding handler fails, 600 s takeover).
+- Run `RoundService.cloud.spec.luau`: forced failure in each start step rolls back cleanly.
 - Check a failed RoundService start retries cleanly and a started system isn't restarted.
 - Run `SpeedSampler.spec.luau`; check that walkers stay quiet and sprinters are heard.
 - Full round end to end: spectators on the platform, InRound cleared on death/escape/Ended, monster parks between rounds.
