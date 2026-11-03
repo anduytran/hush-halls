@@ -17,6 +17,9 @@
 -- Sprint-9 fix: a pending marker older than STALE_PENDING (a day) counts as released, so a purchase left
 -- pending by a server that died is retried the next day instead of being stuck for good. Late writes give up
 -- after MAX_RETRIES attempts, and on shutdown the server waits (up to SHUTDOWN_WAIT) for writes still running.
+-- Sprint-10 fix: while our grant runs or its result is still being written, a heartbeat refreshes our pending
+-- marker's `at` every HEARTBEAT seconds, so only markers left by dead servers ever go stale. A pending marker with
+-- no numeric `at` counts as busy and is restamped with the current time, so it goes stale a day later.
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
@@ -35,7 +38,10 @@ local STALE_PENDING = 24 * 3600
 -- Sprint-9 fix: keepWriting gives up (with a warn) after this many UpdateAsync attempts.
 local MAX_RETRIES = 10
 -- Sprint-9 fix: on shutdown, wait at most this many seconds for in-flight writes and late grants.
-local SHUTDOWN_WAIT = 25
+-- Sprint-10 fix: 20 s (was 25), well inside the 30 s Roblox gives BindToClose.
+local SHUTDOWN_WAIT = 20
+-- Sprint-10 fix: how often (seconds) a live attempt refreshes its pending marker's `at`.
+local HEARTBEAT = 60
 
 -- Sprint-9 fix: the clock and wait used for markers and retries. Specs swap these for a fake clock.
 local clock = {
@@ -44,6 +50,17 @@ local clock = {
 	end,
 	wait = function(seconds: number)
 		task.wait(seconds)
+	end,
+	-- Sprint-10 fix: runs `callback` after `seconds`, without yielding. Used by the heartbeat.
+	delay = function(seconds: number, callback: () -> ())
+		task.delay(seconds, callback)
+	end,
+}
+
+-- Sprint-10 fix: every warning goes through here, so specs can read them.
+local log = {
+	warn = function(message: string)
+		warn(message)
 	end,
 }
 
@@ -68,7 +85,7 @@ local function getHistory(): DataStore?
 		return DataStoreService:GetDataStore("PurchaseHistory")
 	end)
 	if not ok then
-		warn(`[Monetization] purchase history unavailable: {store}`)
+		log.warn(`[Monetization] purchase history unavailable: {store}`)
 		return nil
 	end
 	history = store
@@ -156,13 +173,16 @@ local function isDone(value: any): boolean
 end
 
 -- Sprint-8 fix: a pending marker means another attempt owns the receipt. Only that attempt replaces it.
--- Sprint-9 fix: unless it's older than STALE_PENDING (or has no time at all): then it counts as released.
+-- Sprint-9 fix: unless it's older than STALE_PENDING: then it counts as released.
 -- The old attempt's late write only lands over its own token, so it can't clobber the new attempt's marker.
 local function isPending(value: any): boolean
 	if type(value) ~= "table" or value.status ~= "pending" then
 		return false
 	end
-	return type(value.at) == "number" and clock.now() - value.at <= STALE_PENDING
+	if type(value.at) ~= "number" then
+		return true -- Sprint-10 fix: no time means busy (the reserve restamps it), not released
+	end
+	return clock.now() - value.at <= STALE_PENDING
 end
 
 local function isOurs(value: any, token: string): boolean
@@ -171,11 +191,19 @@ end
 
 -- Sprint-8 fix: one UpdateAsync that writes `final` only over the marker holding our token.
 -- Returns (ok, wasOurs or error).
-local function writeOverOurs(store: DataStore, receiptKey: string, token: string, final: any): (boolean, any)
+-- Sprint-10 fix: with `onlyPending`, it also needs our marker to still be pending (the heartbeat uses this, so a
+-- late refresh can never turn our "done" or "released" back into "pending").
+local function writeOverOurs(
+	store: DataStore,
+	receiptKey: string,
+	token: string,
+	final: any,
+	onlyPending: boolean?
+): (boolean, any)
 	local wasOurs = false
 	local ok, err = pcall(function()
 		store:UpdateAsync(receiptKey, function(value)
-			wasOurs = isOurs(value, token)
+			wasOurs = isOurs(value, token) and (not onlyPending or value.status == "pending")
 			if not wasOurs then
 				return nil -- not our marker: leave it alone
 			end
@@ -185,31 +213,63 @@ local function writeOverOurs(store: DataStore, receiptKey: string, token: string
 	return ok, if ok then wasOurs else err
 end
 
+-- Sprint-10 fix: refreshes our pending marker's `at` every HEARTBEAT seconds until the returned stop function is
+-- called, or the marker is no longer our pending one. Never yields; each beat runs in a task of its own.
+local function startHeartbeat(store: DataStore, receiptKey: string, token: string): () -> ()
+	local beating = true
+	local function beat()
+		if not beating then
+			return
+		end
+		local fresh = { status = "pending", at = clock.now(), token = token }
+		local ok, wasOurs = writeOverOurs(store, receiptKey, token, fresh, true)
+		if ok and not wasOurs then
+			beating = false -- our marker is gone or final: nothing left to keep alive
+		elseif not ok then
+			log.warn(`[Monetization] couldn't refresh pending marker {receiptKey}, trying again later: {wasOurs}`)
+		end
+		if beating then
+			clock.delay(HEARTBEAT, beat)
+		end
+	end
+	clock.delay(HEARTBEAT, beat)
+	return function()
+		beating = false
+	end
+end
+
 -- Sprint-8 fix: writes `final` over our own marker, retrying with backoff until the write succeeds.
 -- Yields, so it runs from the handler's task or a task of its own, never on ProcessReceipt's own path.
 -- Sprint-9 fix: gives up with a warn after MAX_RETRIES attempts, and counts as in flight while it runs.
+-- Sprint-10 fix: keeps our pending marker alive with a heartbeat while it retries.
 local function keepWriting(store: DataStore, receiptKey: string, token: string, final: any, purchaseId: string)
 	inFlight += 1
+	local stopHeartbeat = startHeartbeat(store, receiptKey, token)
 	local delay = RETRY_FIRST
 	for attempt = 1, MAX_RETRIES do
 		local ok, wasOurs = writeOverOurs(store, receiptKey, token, final)
 		if ok then
 			if not wasOurs then
-				warn(`[Monetization] purchase {purchaseId} doesn't hold our marker; wrote nothing`)
+				log.warn(`[Monetization] purchase {purchaseId} doesn't hold our marker; wrote nothing`)
 			end
 			break
 		end
 		if attempt == MAX_RETRIES then
-			warn(
-				`[Monetization] gave up recording purchase {purchaseId} as {final.status} after {MAX_RETRIES}`
-					.. ` attempts: {wasOurs}`
+			-- Sprint-10 fix: name the receipt key, and say what happens to it now.
+			log.warn(
+				`[Monetization] gave up recording purchase {purchaseId} (receipt {receiptKey}) as {final.status}`
+					.. ` after {MAX_RETRIES} attempts: {wasOurs}. It stays pending (NotProcessedYet) until it goes`
+					.. ` stale, {STALE_PENDING} s after its last heartbeat.`
 			)
 			break
 		end
-		warn(`[Monetization] couldn't record purchase {purchaseId} as {final.status}, retrying in {delay} s: {wasOurs}`)
+		log.warn(
+			`[Monetization] couldn't record purchase {purchaseId} as {final.status}, retrying in {delay} s: {wasOurs}`
+		)
 		clock.wait(delay)
 		delay = math.min(delay * 2, RETRY_MAX)
 	end
+	stopHeartbeat()
 	inFlight -= 1
 end
 
@@ -223,7 +283,7 @@ local function releaseIfOurs(store: DataStore, receiptKey: string, token: string
 		return store:GetAsync(receiptKey)
 	end)
 	if not ok then
-		warn(`[Monetization] couldn't read purchase {purchaseId} after a failed reserve: {value}`)
+		log.warn(`[Monetization] couldn't read purchase {purchaseId} after a failed reserve: {value}`)
 	end
 	if not ok or isOurs(value, token) then
 		keepWriting(store, receiptKey, token, final, purchaseId)
@@ -251,7 +311,7 @@ local function runGrant(
 		else
 			local lateOk, lateErr = pcall(onLate, ok, given)
 			if not lateOk then
-				warn(`[Monetization] couldn't record a late grant: {lateErr}`)
+				log.warn(`[Monetization] couldn't record a late grant: {lateErr}`)
 			end
 		end
 		inFlight -= 1
@@ -286,6 +346,13 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 			end
 			if isPending(value) then
 				status = "busy" -- another attempt owns it (its grant may still be running); stale ones fall through
+				if type(value.at) ~= "number" then
+					-- Sprint-10 fix: no time: keep the same marker (same token) but stamp it now, so it goes stale
+					-- a day from now instead of staying busy for good.
+					local restamped = table.clone(value)
+					restamped.at = clock.now()
+					return restamped
+				end
 				return nil
 			end
 			status = "reserved"
@@ -293,7 +360,7 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 		end)
 	end)
 	if not reserveOk then
-		warn(`[Monetization] couldn't reserve purchase {purchaseId}: {reserveResult}`)
+		log.warn(`[Monetization] couldn't reserve purchase {purchaseId}: {reserveResult}`)
 		-- Sprint-8 fix: the write may have landed before the error. Nothing was granted, so release our marker
 		-- if it's there: it would otherwise block the purchase until it goes stale.
 		-- Sprint-9 fix: not blindly: wait, read it back, and release only if it holds our token.
@@ -310,18 +377,22 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 
 	-- Sprint-8 fix: a grant still running when task.spawn returns answers NotProcessedYet now. Its result is
 	-- written over our own marker when it finishes, retrying until the write succeeds.
+	-- Sprint-10 fix: while it runs, a heartbeat keeps our marker fresh; keepWriting takes over when it finishes.
+	local stopHeartbeat: () -> () = function() end
 	local finished, grantOk, given = runGrant(grant, buyer, function(lateOk, lateGiven)
+		stopHeartbeat()
 		if lateOk and lateGiven == true then
 			keepWriting(store, receiptKey, token, marker("done"), purchaseId)
 			return
 		end
 		if not lateOk then
-			warn(`[Monetization] yielding handler failed late for purchase {purchaseId}: {lateGiven}`)
+			log.warn(`[Monetization] yielding handler failed late for purchase {purchaseId}: {lateGiven}`)
 		end
 		keepWriting(store, receiptKey, token, marker("released"), purchaseId)
 	end)
 	if not finished then
-		warn(
+		stopHeartbeat = startHeartbeat(store, receiptKey, token) -- Sprint-10 fix
+		log.warn(
 			`[Monetization] handler for purchase {purchaseId} yielded; product handlers should not yield.`
 				.. " Answering NotProcessedYet until it finishes."
 		)
@@ -330,14 +401,14 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 
 	if not grantOk or given ~= true then
 		if not grantOk then
-			warn(`[Monetization] handler failed for purchase {purchaseId}: {given}`)
+			log.warn(`[Monetization] handler failed for purchase {purchaseId}: {given}`)
 		end
 		-- Sprint-8 fix: release our own marker with UpdateAsync (not RemoveAsync). If that fails, keep retrying
 		-- in the background; until it lands the receipt stays busy, so nothing is granted meanwhile.
 		local released = marker("released")
 		local releaseOk, releaseErr = writeOverOurs(store, receiptKey, token, released)
 		if not releaseOk then
-			warn(`[Monetization] couldn't release purchase {purchaseId}, retrying: {releaseErr}`)
+			log.warn(`[Monetization] couldn't release purchase {purchaseId}, retrying: {releaseErr}`)
 			task.spawn(keepWriting, store, receiptKey, token, released, purchaseId)
 		end
 		return Enum.ProductPurchaseDecision.NotProcessedYet
@@ -347,11 +418,11 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	local doneOk, wasOurs = writeOverOurs(store, receiptKey, token, done)
 	if not doneOk then
 		-- It was given, so tell Roblox it's done rather than risk giving it again, and keep trying to record it.
-		warn(`[Monetization] granted purchase {purchaseId} but couldn't record it yet, retrying: {wasOurs}`)
+		log.warn(`[Monetization] granted purchase {purchaseId} but couldn't record it yet, retrying: {wasOurs}`)
 		task.spawn(keepWriting, store, receiptKey, token, done, purchaseId)
 	elseif not wasOurs then
 		-- Sprint-8 fix: nothing else replaces our marker, so the store was changed by hand. It was given anyway.
-		warn(`[Monetization] purchase {purchaseId} was granted but no longer holds our marker`)
+		log.warn(`[Monetization] purchase {purchaseId} was granted but no longer holds our marker`)
 	end
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
@@ -370,7 +441,7 @@ end
 -- Sprint-9 fix: on shutdown, give background writes up to SHUTDOWN_WAIT seconds to land.
 game:BindToClose(function()
 	if not drain(SHUTDOWN_WAIT) then
-		warn(`[Monetization] shutting down with {inFlight} purchase write(s) still running`)
+		log.warn(`[Monetization] shutting down with {inFlight} purchase write(s) still running`)
 	end
 end)
 
@@ -385,6 +456,11 @@ Monetization._test = {
 	STALE_PENDING = STALE_PENDING,
 	MAX_RETRIES = MAX_RETRIES,
 	SHUTDOWN_WAIT = SHUTDOWN_WAIT,
+	-- Sprint-10 fix: specs swap `clock.delay` and `log.warn` too, and read the registered handlers.
+	HEARTBEAT = HEARTBEAT,
+	log = log,
+	passHandlers = passHandlers,
+	productHandlers = productHandlers,
 	drain = drain,
 	inFlight = function(): number
 		return inFlight
@@ -404,7 +480,7 @@ MarketplaceService.ProcessReceipt = function(receipt)
 	local ok, decision = pcall(processReceipt, receipt, store, handler, player)
 	processing[processingKey] = nil
 	if not ok then
-		warn(`[Monetization] couldn't process purchase {receipt.PurchaseId}: {decision}`)
+		log.warn(`[Monetization] couldn't process purchase {receipt.PurchaseId}: {decision}`)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 	return decision

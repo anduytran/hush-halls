@@ -10,6 +10,8 @@
 -- number the test moves, and `wait` records the delay, moves the clock and returns at once, so background
 -- retries finish before the call that started them returns. Yielding grants yield with coroutine.yield and the
 -- test resumes them with `finish()`, so their timing is exact too.
+-- Sprint-10 fix: `clock.delay` (the heartbeat's timer) only queues its callback; `fake.advance(seconds)` moves the
+-- clock and fires due timers in order. Warnings are recorded in `fake.warns` instead of printed.
 local Monetization = require("./Monetization")
 local processReceipt = Monetization._processReceipt
 local hooks = Monetization._test
@@ -18,12 +20,58 @@ local Decision = Enum.ProductPurchaseDecision
 local buyer = { Name = "Tester", UserId = 1 }
 
 -- Sprint-9 fix: the fake clock. `fake.t` is "now"; `fake.waits` lists every delay waited, in order.
-local realNow, realWait = hooks.clock.now, hooks.clock.wait
-local fake = { t = 0, waits = {} :: { number } }
+local realNow, realWait, realDelay = hooks.clock.now, hooks.clock.wait, hooks.clock.delay
+local realWarn = hooks.log.warn
+local fake = {
+	t = 0,
+	waits = {} :: { number },
+	timers = {} :: { { due: number, callback: () -> () } }, -- Sprint-10 fix
+	warns = {} :: { string }, -- Sprint-10 fix
+}
+
+-- Sprint-10 fix: moves the clock forward `seconds`, firing each queued timer (earliest first) as its time comes.
+function fake.advance(seconds: number)
+	local target = fake.t + seconds
+	while true do
+		local nextIndex = nil
+		for i, timer in fake.timers do
+			if timer.due <= target and (nextIndex == nil or timer.due < fake.timers[nextIndex].due) then
+				nextIndex = i
+			end
+		end
+		if nextIndex == nil then
+			break
+		end
+		local timer = table.remove(fake.timers, nextIndex)
+		fake.t = math.max(fake.t, timer.due)
+		timer.callback()
+	end
+	fake.t = target
+end
+
+-- Sprint-10 fix: true if some recorded warning contains every one of `parts` (plain text).
+function fake.warned(...: string): boolean
+	local parts = { ... }
+	for _, message in fake.warns do
+		local all = true
+		for _, part in parts do
+			if not string.find(message, part, 1, true) then
+				all = false
+				break
+			end
+		end
+		if all then
+			return true
+		end
+	end
+	return false
+end
 
 local function installFakeClock()
 	fake.t = os.time()
 	fake.waits = {}
+	fake.timers = {}
+	fake.warns = {}
 	hooks.clock.now = function()
 		return fake.t
 	end
@@ -31,11 +79,19 @@ local function installFakeClock()
 		table.insert(fake.waits, seconds)
 		fake.t += seconds
 	end
+	hooks.clock.delay = function(seconds, callback)
+		table.insert(fake.timers, { due = fake.t + seconds, callback = callback })
+	end
+	hooks.log.warn = function(message)
+		table.insert(fake.warns, message)
+	end
 end
 
 local function restoreClock()
 	hooks.clock.now = realNow
 	hooks.clock.wait = realWait
+	hooks.clock.delay = realDelay
+	hooks.log.warn = realWarn
 end
 
 local function receipt(purchaseId: string)
@@ -242,15 +298,13 @@ local tests = {
 		end
 	end,
 
-	-- Sprint-9 fix: a pending marker older than STALE_PENDING (or with no time) counts as released.
+	-- Sprint-9 fix: a pending marker older than STALE_PENDING counts as released.
+	-- Sprint-10 fix: one with no numeric `at` no longer does (see the restamp test below).
 	["a stale pending marker is taken over: reserved again, granted once, done with our token"] = function()
 		for label, stale in
 			{
 				older = { status = "pending", at = fake.t - hooks.STALE_PENDING - 1, token = "other" },
 				epoch = { status = "pending", at = 0 },
-				untimed = { status = "pending", token = "other" },
-				-- a non-numeric `at` is not a time, so the marker counts as released
-				textat = { status = "pending", at = "yesterday", token = "other" },
 			}
 		do
 			local store = newStore()
@@ -290,6 +344,111 @@ local tests = {
 	["the stale-takeover window is a day"] = function()
 		assert(Monetization._PENDING_TIMEOUT == nil, "PENDING_TIMEOUT should no longer exist")
 		assert(hooks.STALE_PENDING == 24 * 3600, `expected STALE_PENDING of a day, got {hooks.STALE_PENDING}`)
+	end,
+
+	-- Sprint-10 fix
+	["the heartbeat is a minute and the shutdown wait is 20 s"] = function()
+		assert(hooks.HEARTBEAT == 60, `expected HEARTBEAT of 60 s, got {hooks.HEARTBEAT}`)
+		assert(hooks.SHUTDOWN_WAIT == 20, `expected SHUTDOWN_WAIT of 20 s, got {hooks.SHUTDOWN_WAIT}`)
+	end,
+
+	-- Sprint-10 fix: a pending marker with no numeric `at` is busy. The reserve keeps it (same token) and stamps
+	-- it with the current time, so it goes stale a day later, not at once.
+	["a pending marker with no time is busy and restamped, then goes stale a day later"] = function()
+		for label, untimed in
+			{
+				missing = { status = "pending", token = "other" },
+				text = { status = "pending", at = "yesterday", token = "other" },
+			}
+		do
+			local store = newStore()
+			local r = receipt(`untimed-{label}`)
+			local key = keyOf(r)
+			store.data[key] = untimed
+			local counter, grant = countingGrant(store, key)
+			assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, `untimed {label}`)
+			assert(counter.calls == 0, `untimed {label}: must not be taken over, granted {counter.calls} times`)
+			local held = store.data[key]
+			assert(held.status == "pending", `untimed {label}: expected pending, got {tostring(held.status)}`)
+			assert(held.token == "other", `untimed {label}: the marker must keep its token`)
+			assert(held.at == fake.t, `untimed {label}: expected at = now, got {tostring(held.at)}`)
+			fake.t += hooks.STALE_PENDING
+			assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, `untimed {label} at 24 h`)
+			assert(counter.calls == 0, `untimed {label}: still busy at exactly 24 h, granted {counter.calls} times`)
+			fake.t += 1
+			assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, `untimed {label} stale`)
+			assert(counter.calls == 1, `untimed {label}: stale after a day, expected 1 grant, got {counter.calls}`)
+			assert(statusOf(store, key) == "done", `untimed {label}: expected done`)
+		end
+	end,
+
+	-- Sprint-10 fix: a live server's yielding grant keeps its marker fresh, so a retry over a day later is still
+	-- busy. Once the grant finishes and is recorded, the heartbeat stops.
+	["the heartbeat keeps a running grant's marker busy past STALE_PENDING"] = function()
+		local store = newStore()
+		local r = receipt("heartbeat")
+		local key = keyOf(r)
+		local first, firstGrant = lateGrant(true)
+		assertDecision(processReceipt(r, store, firstGrant, buyer), Decision.NotProcessedYet, "yielding handler")
+		local token = store.data[key].token
+		local start = fake.t
+		fake.advance(hooks.STALE_PENDING + 3600)
+		local held = store.data[key]
+		assert(held.status == "pending" and held.token == token, "our marker should still be pending with our token")
+		assert(
+			fake.t - held.at < hooks.HEARTBEAT and held.at > start,
+			`the marker should be refreshed every {hooks.HEARTBEAT} s, last at {held.at - start} s of {fake.t - start}`
+		)
+		local other, otherGrant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, otherGrant, buyer), Decision.NotProcessedYet, "retry after 25 h")
+		assert(other.calls == 0, `a heartbeat-fresh marker must not be taken over, granted {other.calls} times`)
+		first.finish()
+		assert(statusOf(store, key) == "done", `expected done, got {tostring(statusOf(store, key))}`)
+		local done = store.data[key]
+		local callsAfterDone = store.calls
+		fake.advance(hooks.HEARTBEAT * 5)
+		assert(store.data[key] == done, "the heartbeat must never turn our done marker back into pending")
+		assert(store.calls == callsAfterDone, `the heartbeat should stop once done, saw {store.calls - callsAfterDone}`)
+		assert(first.calls == 1 and other.calls == 0, "exactly one grant in total")
+	end,
+
+	-- Sprint-10 fix: keepWriting's retries keep the heartbeat going too, until the result lands.
+	["the heartbeat keeps the marker fresh while keepWriting retries"] = function()
+		local store = newStore()
+		local r = receipt("heartbeat-retry")
+		local key = keyOf(r)
+		hooks.clock.wait = function(seconds)
+			table.insert(fake.waits, seconds)
+			fake.advance(seconds)
+		end
+		-- The done write fails 8 times (91.5 s of backoff); heartbeat writes (pending) go through.
+		local doneFailures = 8
+		local beats = {} :: { number }
+		local realUpdate = store.UpdateAsync
+		function store:UpdateAsync(k, transform)
+			local probe = transform(self.data[k])
+			local writing = if type(probe) == "table" then probe.status else nil
+			if writing == "done" and doneFailures > 0 then
+				doneFailures -= 1
+				self.calls += 1
+				error("simulated done write failure")
+			end
+			local result = realUpdate(self, k, transform)
+			if writing == "pending" and self.calls > 1 then
+				table.insert(beats, result.at)
+			end
+			return result
+		end
+		local counter, grant = lateGrant(true)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "yielding handler")
+		local start = fake.t
+		counter.finish()
+		assert(statusOf(store, key) == "done", `expected done, got {tostring(statusOf(store, key))}`)
+		assert(#beats >= 1, "expected at least one heartbeat while the done write was retried")
+		assert(
+			beats[1] == start + hooks.HEARTBEAT,
+			`first beat should be at +{hooks.HEARTBEAT} s, was {beats[1] - start}`
+		)
 	end,
 
 	-- Sprint-8 fix: a released marker (a refused or failed attempt) can be reserved again.
@@ -417,6 +576,45 @@ local tests = {
 		end
 		assert(statusOf(store, key) == "pending", "nothing could be written, so our marker is still pending")
 		assert(hooks.inFlight() == inFlightBefore - 1, "the given-up grant must no longer count as in flight")
+		-- Sprint-10 fix: the give-up warning names the receipt key and says it stays pending until stale.
+		assert(
+			fake.warned("gave up", key, `{hooks.MAX_RETRIES} attempts`, "stays pending", "stale"),
+			`expected a give-up warning naming {key}; got:\n{table.concat(fake.warns, "\n")}`
+		)
+		-- After giving up the heartbeat stops, so a dead write's marker does go stale.
+		local callsAfter = store.calls
+		fake.advance(hooks.HEARTBEAT * 3)
+		assert(store.calls == callsAfter, "the heartbeat must stop once keepWriting gives up")
+	end,
+
+	-- Sprint-10 fix: onProduct and onPass register their handlers by key; onPass doesn't run it for non-owners.
+	["onProduct and onPass register their handlers"] = function()
+		local productKey, passKey = "SpecProduct", "SpecPass"
+		local oldProduct, oldPass = hooks.productHandlers[productKey], hooks.passHandlers[passKey]
+		local ok, err = pcall(function()
+			local function productHandler(_player)
+				return true
+			end
+			Monetization.onProduct(productKey, productHandler)
+			assert(hooks.productHandlers[productKey] == productHandler, "onProduct should register the handler")
+			local passRuns = 0
+			local function passHandler(_player)
+				passRuns += 1
+			end
+			Monetization.onPass(passKey, passHandler)
+			assert(hooks.passHandlers[passKey] == passHandler, "onPass should register the handler")
+			assert(passRuns == 0, `no one owns {passKey}, so its handler must not run, ran {passRuns} times`)
+			local function replacement(_player)
+				return false
+			end
+			Monetization.onProduct(productKey, replacement)
+			assert(hooks.productHandlers[productKey] == replacement, "registering again should replace the handler")
+		end)
+		hooks.productHandlers[productKey] = oldProduct
+		hooks.passHandlers[passKey] = oldPass
+		if not ok then
+			error(err, 0)
+		end
 	end,
 
 	-- Sprint-9 fix: the same cap applies to the background mark-done after a synchronous grant.
