@@ -2,6 +2,11 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 13: receipt follow-ups
+- **Test hooks exist only in Studio** and start off there; live servers never have `_test`. Replaces sprint 12's always-present locked hooks.
+- **Expired regrant blocks are pruned** on every receipt and new block, so the table can't grow forever.
+- **Accepted known limit:** past the 30 min heartbeat cap, a receipt can be granted twice once its marker goes stale or its block expires. Closing it needs a never-stale "maybe given" status; deferred.
+
 ## 2026-11-03 — Sprint 12: receipt follow-ups
 - **Only a given-up "done" write blocks regrants**, and the block expires 24 h + 30 min later. A released give-up can be bought again. Replaces sprint 11's block on any give-up for the server's lifetime.
 - **One 30 min heartbeat window per attempt**, shared by the grant and result-write retries.

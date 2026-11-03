@@ -80,8 +80,15 @@ Sprint 12 (2026-11-03): sprint-11 reviewer follow-ups on receipts (merged; scrip
 - [x] Only a given-up "done" blocks regrants; a released give-up clears the block. Blocks expire after 24 h + 30 min.
 - [x] `Monetization._test` always exists but is frozen and errors unless enabled (Studio, or `_test.enable()`), so the spec really tests receipts outside Studio too. Old `_processReceipt`/`_RETRY_FIRST` hooks removed.
 
+Sprint 13 (2026-11-03): sprint-12 reviewer follow-ups on receipts (merged; scripter reports all 59 spec tests pass in a Studio playtest, not run in a live round).
+- [x] `Monetization._test` exists only in Studio and starts off; `enable()`/`disable()` toggle it, and the spec restores the state per test.
+- [x] Expired regrant blocks are pruned on every receipt and every new block.
+- [x] Spec write failures now fail inside the real UpdateAsync (nothing written, then throws).
+- Known limit (documented in code): after the 30 min heartbeat cap, a receipt can still be granted twice once its marker goes stale or the block expires.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–11; sprint 12's receipt spec ran in Studio (54 pass) but not in a live round.
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–11; sprints 12–13 receipt specs ran in Studio (54, then 59 pass) but not in a live round.
+- Buy a product in a published place and check sprint 13: hooks absent on a live server, expired blocks pruned.
 - Buy a product in a published place and check the receipt flow (sprint 12: shared heartbeat window, done-only regrant block).
 - Run `Monetization.cloud.spec.luau` in Studio (sprint 11: 30 min heartbeat cap, one-time restamp, no regrant after give-up, hooks absent outside Studio).
 - Run `Monetization.cloud.spec.luau` (sprint 10: heartbeat, no-time restamp, 20 s drain, warn text).
