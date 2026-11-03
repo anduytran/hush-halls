@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 15: walking is silent
+- **Raised the monster's hearing limit to 12 studs/s** (walk is 10, sprint 24), so walking is silent and only sprinting draws the monster. Fits the "sprinting is loud, walking is quiet" rule. Alternative considered: lower walk speed below 8 so walkers stay faintly audible; rejected as it slows every round.
+
 ## 2026-11-03 — Sprint 14: VIP 2x coins
 - **Built the advertised VIP 2x coins** rather than changing the pass description. The VIP grant sets a `CoinMultiplier = 2` attribute; RoundService's `addCoins` multiplies by it. Only the escape reward exists today, so VIP escape pays 20.
 - **Bad multiplier values count as 1**, so a broken attribute can never lower or blow up a payout.

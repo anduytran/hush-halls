@@ -89,7 +89,11 @@ Sprint 13 (2026-11-03): sprint-12 reviewer follow-ups on receipts (merged; scrip
 Sprint 14 (2026-11-03): VIP 2x coins on escape (merged; new spec in `RoundService.cloud.spec.luau`, not run in a live round).
 - [x] Escape pays 10 × the player's `CoinMultiplier` attribute (VIP pass sets 2 → 20 coins); a missing or bad value (non-number, NaN, < 1, infinite) counts as 1.
 
+Sprint 15 (2026-11-03): walking is silent to the monster (merged; spec added to `Monster.cloud.spec.luau`, not run in a live round).
+- [x] Monster `HEARD_SPEED` raised from 8 to 12, so walkers (10 studs/s) are never targeted and anyone over 12 is heard. New `Monster.isHeard(speed)` for tests.
+
 ## Needs a playtest
+- Walking is silent (sprint 15): a walker at 10 studs/s is never chased, a sprinter is; check the monster still feels threatening when everyone walks.
 - VIP escape pays 20 coins, non-VIP 10 (sprint 14; needs a VIP pass ID to test the real grant).
 None of these have run in a live round yet. Studio wasn't reachable in sprints 1–11; sprints 12–13 receipt specs ran in Studio (54, then 59 pass) but not in a live round.
 - Buy a product in a published place and check sprint 13: hooks absent on a live server, expired blocks pruned.
@@ -114,7 +118,6 @@ None of these have run in a live round yet. Studio wasn't reachable in sprints 1
 - Monetization now opens its DataStore lazily, so it no longer breaks startup, but receipts still can't be tested in an unpublished Studio place. A full test needs the place published with API access turned on.
 
 ## Next
-- Fix the walk/hearing mismatch (see [[Mechanics/Blind Monster]], open questions).
 - Write the sprint 1 numbers into [[Balance]].
 - Milestone 2 — Feel: footstep sounds, monster audio, water VFX, camera shake, proper hall art.
 
