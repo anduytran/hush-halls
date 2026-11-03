@@ -516,9 +516,9 @@ local tests = {
 	end,
 
 	-- Sprint 20: end-to-end smoke of one round with durations 1/2/1. Samples State and every present player each
-	-- frame from the first Lobby to the next one. Mid-Running it marks everyone Escaped (as Exit.Touched would),
-	-- which also ends Running early, so the next round's spawn has an Escaped flag to clear. RoundService clears
-	-- Escaped when that Lobby's countdown ends, while RoundState is still Lobby.
+	-- frame from the first Lobby until the second Running begins. Mid-Running it marks everyone Escaped (as
+	-- Exit.Touched would), which also ends Running early, so Ended has an Escaped flag to carry. Sprint 26:
+	-- RoundService clears Escaped at the Ended -> Lobby change, just before RoundState becomes Lobby.
 	["one full round with durations 1/2/1: states, timer, water, InRound and Escaped"] = function()
 		local players = Players:GetPlayers()
 		if #players == 0 then
@@ -563,21 +563,18 @@ local tests = {
 				inRound = {},
 				escaped = {},
 			}
-			local escapedCleared = true
 			for _, player in players do
 				if player.Parent == Players then
 					sample.inRound[player] = player:GetAttribute("InRound")
 					sample.escaped[player] = player:GetAttribute("Escaped")
-					if sample.escaped[player] ~= false then
-						escapedCleared = false
-					end
 				end
 			end
 			table.insert(samples, sample)
 			if phases[#phases] ~= sample.roundState then
 				table.insert(phases, sample.roundState)
 			end
-			if #phases > 4 or (#phases == 4 and escapeMarked and escapedCleared) then
+			-- Stop once the second Running has begun: by then the second Lobby has run its whole countdown.
+			if #phases > 4 then
 				break
 			end
 			if sample.roundState == "Running" and sample.timeLeft == 1 and not escapeMarked then
@@ -597,12 +594,13 @@ local tests = {
 			RunService.Heartbeat:Wait()
 		end
 
-		-- RoundState: Lobby -> Running -> Ended -> Lobby, and nothing else.
+		-- RoundState: Lobby -> Running -> Ended -> Lobby, then the next Running (the loop stops there).
 		local names = {}
 		for _, phase in phases do
 			table.insert(names, tostring(phase))
 		end
-		local order = table.concat(names, " -> ")
+		assert(#names >= 4, `expected Lobby -> Running -> Ended -> Lobby, got {table.concat(names, " -> ")}`)
+		local order = table.concat(names, " -> ", 1, 4)
 		assert(
 			order == "Lobby -> Running -> Ended -> Lobby",
 			`expected Lobby -> Running -> Ended -> Lobby, got {order}`
@@ -657,11 +655,11 @@ local tests = {
 			end
 		end
 		assert(lobby1[#lobby1].water == 0, `WaterLevel should be 0 in Lobby, got {lobby1[#lobby1].water}`)
-		local final = samples[#samples]
+		local lastLobby = lobby2[#lobby2]
 		if noiseRunning then
 			assert(ended[#ended].water > 0, "the water raised while Running should still be up in Ended")
 		end
-		assert(final.water == 0, `WaterLevel should reset by the next Lobby, got {final.water}`)
+		assert(lastLobby.water == 0, `WaterLevel should reset by the next Lobby, got {lastLobby.water}`)
 
 		-- InRound: true for every present player all through Running until they escape; false in Ended and the
 		-- next Lobby's countdown (the next round's spawn sets it again once that countdown ends).
@@ -687,20 +685,21 @@ local tests = {
 			end
 		end
 
-		-- Escaped: still true through Ended, then cleared before the next round leaves Lobby.
+		-- Escaped: still true all through Ended, and cleared at the Ended -> Lobby change, so the first Lobby
+		-- sample already has it false.
 		for _, sample in ended do
 			for player, escaped in sample.escaped do
 				assert(escaped == true, `{player.Name} should still be Escaped during Ended, was {tostring(escaped)}`)
 			end
 		end
 		assert(
-			final.roundState == "Lobby",
-			`Escaped should be cleared while still in Lobby, got {tostring(final.roundState)}`
+			lobby2[1].roundState == "Lobby",
+			`the first sample after Ended should be Lobby, got {tostring(lobby2[1].roundState)}`
 		)
-		for player, escaped in final.escaped do
+		for player, escaped in lobby2[1].escaped do
 			assert(
 				escaped == false,
-				`{player.Name} should have Escaped cleared at the next Lobby, was {tostring(escaped)}`
+				`{player.Name} should have Escaped cleared by the first Lobby sample, was {tostring(escaped)}`
 			)
 		end
 	end,
@@ -759,6 +758,60 @@ local tests = {
 		end)
 		assert(coinsOf(runner) == 10, `the runner should end with 10 Coins, got {tostring(coinsOf(runner))}`)
 		assert(coinsOf(stayer) == 0, `the stayer didn't escape and should have 0 Coins, got {coinsOf(stayer)}`)
+	end,
+
+	-- Sprint 26: one fake escapes through the exit and the other dies, durations 1/10/1. Once neither is active the round
+	-- ends early, well before Running's 10s runs out. Escaped stays true all through Ended, and the runner keeps its coin.
+	["an escape and a death end Running early, with Escaped still set through Ended"] = function()
+		if fakeRoundSkipped("escape and death") then
+			return
+		end
+		RoundService._test.setDurations(1, 10, 1)
+		local runner = RoundTestPlayers.add("SpecRunner")
+		local victim = RoundTestPlayers.add("SpecVictim")
+		RoundService.start()
+
+		waitForState("Running", 15)
+		local root = (runner.Character :: Model):FindFirstChild("HumanoidRootPart") :: BasePart
+		assert(RoundTestPlayers.touchExit(root), "touchExit should reach start()'s exit handler")
+		assert(runner:GetAttribute("Escaped") == true, "touching the exit should mark the runner Escaped")
+		assert(coinsOf(runner) == 10, `the runner should be paid 10 Coins, got {tostring(coinsOf(runner))}`)
+		assert(RoundTestPlayers.kill(victim), "the victim should have a character to kill")
+		-- A real player in the play-test is a participant too, so mark them out the way Exit.Touched would (no coins),
+		-- or the round stays open for them.
+		for _, player in Players:GetPlayers() do
+			player:SetAttribute("Escaped", true)
+			player:SetAttribute("InRound", false)
+		end
+
+		local lowestRunningTime = math.huge
+		waitForState("Ended", 15, function()
+			local timeLeft = state:GetAttribute("TimeLeft")
+			if state:GetAttribute("RoundState") == "Running" and type(timeLeft) == "number" then
+				lowestRunningTime = math.min(lowestRunningTime, timeLeft)
+			end
+		end)
+		assert(lowestRunningTime < math.huge, "Running was never seen with a TimeLeft")
+		assert(
+			lowestRunningTime >= 5,
+			`round should end early once nobody is active; Running reached TimeLeft {lowestRunningTime}`
+		)
+
+		-- Ended lasts 1s, so these frames are checked while waiting for the next Lobby.
+		local endedFrames = 0
+		waitForState("Lobby", 15, function()
+			for _, player in { runner, victim } do
+				assert(player:GetAttribute("InRound") == false, `{player.Name} should not be InRound after Running`)
+			end
+			if state:GetAttribute("RoundState") == "Ended" then
+				endedFrames += 1
+				assert(runner:GetAttribute("Escaped") == true, "the runner should still be Escaped during Ended")
+			end
+		end)
+		assert(endedFrames > 0, "no Ended frame was checked for the runner's Escaped flag")
+		assert(coinsOf(runner) == 10, `the runner should keep 10 Coins, got {tostring(coinsOf(runner))}`)
+		assert(coinsOf(victim) == 0, `the dead victim should have 0 Coins, got {tostring(coinsOf(victim))}`)
+		assert(victim:GetAttribute("Escaped") ~= true, "dying must not count as escaping")
 	end,
 
 	-- Sprint 21: a fake who joins while Running (durations 1/2/1) watches from the platform, is never InRound in

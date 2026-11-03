@@ -409,6 +409,10 @@ function RoundService.start()
 					task.wait(pause)
 					endLeft -= pause
 				end
+				-- Sprint 26: Escaped clears when the round ends, so nobody still reads as escaped in the next Lobby.
+				for _, player in getPlayers() do
+					player:SetAttribute("Escaped", false)
+				end
 				table.clear(participants)
 				table.clear(dead)
 			end
