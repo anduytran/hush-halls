@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 19: HUD sprint-key ownership
+- **Only one mounted HUD owns the global `HushSprint` Shift binding; when it is destroyed, the next live HUD takes it over.** This stops a spec's (or a second) HUD from stealing or removing the player's sprint key. Alternative considered: unique action names per HUD; rejected because two bindings on Shift would both fire.
+
 ## 2026-11-03 — Sprint 18: goal line review fixes
 - **The goal line gets its own panel under RoundInfo, capped to RoundInfo's width (160–360 px)** so it stays in the top-centre column clear of Coins/Shop on a 375 px phone. Screens under ~370 px aren't a target today. Alternative considered: keeping it as a child line inside RoundInfo; rejected because wrapped text overflowed and crowded the right column.
 
