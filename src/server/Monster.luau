@@ -14,8 +14,12 @@ local Monster = {}
 
 local SIZE = 6
 local HEARING_RANGE = 150
-local SPRINT_SPEED = 14 -- horizontal speed above this counts as sprinting (heard first)
-local HEARD_SPEED = 12 -- walk speed is 10: at or below walk speed the monster can't hear you
+-- Above this speed you are sprinting and are chased before anyone walking. The gap up from HEARD_SPEED
+-- (12-14) is on purpose: heard, but only a walker-level target, so the monster drifts toward you.
+local SPRINT_SPEED = 14
+-- At or above this speed the monster hears you. Walk speed is 10, so walkers stay silent; 12-14 = heard
+-- but not sprinting; above 14 = sprint, chased first.
+local HEARD_SPEED = 12
 local QUIET_NOISE = 0.05 -- below this the monster drifts to the last heard spot
 local BASE_SPEED = 4
 local NOISE_SPEED = 14
@@ -269,8 +273,13 @@ local function run(hall: Instance)
 	onRoundState()
 end
 
-function Monster.isHeard(speed: number): boolean
-	return isHeard(speed)
+-- TEST-ONLY hooks, like RoundService._test: the table exists only in Studio, so it is not part of the API.
+if RunService:IsStudio() then
+	Monster._test = {
+		isHeard = isHeard,
+		HEARD_SPEED = HEARD_SPEED,
+		SPRINT_SPEED = SPRINT_SPEED,
+	}
 end
 
 function Monster.start()

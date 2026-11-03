@@ -4,6 +4,7 @@
 -- so they are not covered here; see the report.
 local Monster = require("./Monster")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local state = ReplicatedStorage:FindFirstChild("State")
 if not state then
@@ -91,7 +92,22 @@ return {
 	end,
 
 	["walk speed (10) is ignored and sprint-ish speed (16) is heard"] = function()
-		assert(Monster.isHeard(10) == false, "a target moving at 10 studs/s should be ignored")
-		assert(Monster.isHeard(16) == true, "a target moving at 16 studs/s should be heard")
+		if not RunService:IsStudio() then
+			return -- Monster._test only exists in Studio
+		end
+		local test = Monster._test
+		assert(test.isHeard(10) == false, "a target moving at 10 studs/s should be ignored")
+		assert(test.isHeard(16) == true, "a target moving at 16 studs/s should be heard")
+	end,
+
+	["13 studs/s is heard but is not sprinting"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		assert(test.isHeard(13) == true, "13 studs/s should be heard")
+		assert(13 <= test.SPRINT_SPEED, "13 studs/s should not count as sprinting")
+		assert(test.HEARD_SPEED < test.SPRINT_SPEED, "the heard threshold should sit below the sprint threshold")
+		assert(16 > test.SPRINT_SPEED, "16 studs/s should count as sprinting")
 	end,
 }
