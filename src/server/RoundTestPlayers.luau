@@ -1,0 +1,191 @@
+--!strict
+-- Studio only, for specs: stand-in players a RoundService round treats like real ones (a Studio play-test has
+-- just one real player). Game code never requires this module. attach() errors outside Studio, and nothing
+-- else here does anything until it has run, so no stand-in can reach a live game.
+-- attach(roundService) swaps RoundService's player source (RoundService._test.setPlayerSource) for one that
+-- lists the real players plus the stand-ins; detach() removes the stand-ins and puts the Players service back.
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+-- The members RoundService (and the specs) read from a player. A stand-in has exactly these.
+export type FakePlayer = {
+	Name: string,
+	Parent: Instance?,
+	Character: Model?,
+	CharacterAdded: RBXScriptSignal,
+	SetAttribute: (self: FakePlayer, attribute: string, value: any) -> (),
+	GetAttribute: (self: FakePlayer, attribute: string) -> any,
+	GetAttributeChangedSignal: (self: FakePlayer, attribute: string) -> RBXScriptSignal,
+	FindFirstChild: (self: FakePlayer, name: string) -> Instance?,
+	LoadCharacter: (self: FakePlayer) -> (),
+}
+
+-- Matches RoundService.PlayerSource (not required here, so a spec's own RoundService instance is the one used).
+type PlayerSource = {
+	getPlayers: () -> { Player },
+	playerFromCharacter: (character: Model) -> Player?,
+	connectPlayers: (onAdded: (Player) -> (), onRemoving: (Player) -> ()) -> { RBXScriptConnection },
+	connectExit: (exit: BasePart, onTouched: (BasePart) -> ()) -> RBXScriptConnection,
+}
+type RoundServiceTest = { _test: { setPlayerSource: (PlayerSource?) -> () } }
+
+local RoundTestPlayers = {}
+
+-- The RoundService attach() wired up, or nil.
+local attached: RoundServiceTest? = nil
+-- Each stand-in, with the Folder that holds its attributes, leaderstats and CharacterAdded event.
+local fakes: { [FakePlayer]: Folder } = {}
+-- What RoundService's start() handed the source, with the connection that says whether it is still live
+-- (stop() disconnects it). Only called while that connection is connected.
+local joined: { connection: RBXScriptConnection, onAdded: (Player) -> (), onRemoving: (Player) -> () }? = nil
+local exitHandler: { connection: RBXScriptConnection, onTouched: (BasePart) -> () }? = nil
+
+-- RoundService is typed on Player. A stand-in only gets read through the FakePlayer members above, so it is
+-- handed over as a Player here, in this one place.
+local function asPlayer(fake: FakePlayer): Player
+	return (fake :: any) :: Player
+end
+
+local source: PlayerSource = {
+	getPlayers = function()
+		local list = Players:GetPlayers()
+		for fake in fakes do
+			table.insert(list, asPlayer(fake))
+		end
+		return list
+	end,
+	playerFromCharacter = function(character)
+		local player = Players:GetPlayerFromCharacter(character)
+		if player then
+			return player
+		end
+		for fake in fakes do
+			if fake.Character == character then
+				return asPlayer(fake)
+			end
+		end
+		return nil
+	end,
+	connectPlayers = function(onAdded, onRemoving)
+		local added = Players.PlayerAdded:Connect(onAdded)
+		joined = { connection = added, onAdded = onAdded, onRemoving = onRemoving }
+		return { added, Players.PlayerRemoving:Connect(onRemoving) }
+	end,
+	connectExit = function(exit, onTouched)
+		local connection = exit.Touched:Connect(onTouched)
+		exitHandler = { connection = connection, onTouched = onTouched }
+		return connection
+	end,
+}
+
+-- Studio only (errors elsewhere). Wires the stand-ins into this RoundService. Call it while the service is
+-- stopped: start() connects through the source it finds. Calling it again just re-wires.
+function RoundTestPlayers.attach(roundService: RoundServiceTest)
+	if not RunService:IsStudio() then
+		error("RoundTestPlayers only works in Studio", 2)
+	end
+	attached = roundService
+	roundService._test.setPlayerSource(source)
+end
+
+-- Removes every stand-in and gives the attached RoundService back the Players service. Safe to call any time.
+function RoundTestPlayers.detach()
+	RoundTestPlayers.removeAll()
+	if attached then
+		attached._test.setPlayerSource(nil)
+		attached = nil
+	end
+	joined, exitHandler = nil, nil
+end
+
+-- Adds a stand-in that joins as PlayerAdded would (if start() has run) and gets a character at once, as Roblox's
+-- auto-spawn would. It starts with leaderstats.Coins = 0. Its character is an anchored HumanoidRootPart and a
+-- Humanoid; LoadCharacter replaces it. Errors unless attach() has run.
+function RoundTestPlayers.add(name: string): FakePlayer
+	if not attached then
+		error("RoundTestPlayers.add: call attach() first", 2)
+	end
+	local folder = Instance.new("Folder")
+	folder.Name = name
+	local characterAdded = Instance.new("BindableEvent")
+	characterAdded.Parent = folder
+	local leaderstats = Instance.new("Folder")
+	leaderstats.Name = "leaderstats"
+	local coins = Instance.new("IntValue")
+	coins.Name = "Coins"
+	coins.Parent = leaderstats
+	leaderstats.Parent = folder
+
+	local fake: FakePlayer = {
+		Name = name,
+		Parent = Players,
+		Character = nil,
+		CharacterAdded = characterAdded.Event,
+		SetAttribute = function(_self, attribute, value)
+			folder:SetAttribute(attribute, value)
+		end,
+		GetAttribute = function(_self, attribute)
+			return folder:GetAttribute(attribute)
+		end,
+		GetAttributeChangedSignal = function(_self, attribute)
+			return folder:GetAttributeChangedSignal(attribute)
+		end,
+		FindFirstChild = function(_self, childName)
+			return folder:FindFirstChild(childName)
+		end,
+		LoadCharacter = function(self)
+			if self.Character then
+				self.Character:Destroy()
+			end
+			local character = Instance.new("Model")
+			character.Name = name
+			local root = Instance.new("Part")
+			root.Name = "HumanoidRootPart"
+			root.Anchored = true
+			root.CanCollide = false
+			root.Size = Vector3.new(2, 2, 1)
+			root.Parent = character
+			character.PrimaryPart = root
+			local humanoid = Instance.new("Humanoid")
+			humanoid.RequiresNeck = false
+			humanoid.Parent = character
+			character.Parent = workspace
+			self.Character = character
+			characterAdded:Fire(character)
+		end,
+	}
+	fakes[fake] = folder
+	if joined and joined.connection.Connected then
+		joined.onAdded(asPlayer(fake))
+	end
+	fake:LoadCharacter()
+	return fake
+end
+
+-- Takes every stand-in out, as PlayerRemoving would, and destroys its character.
+function RoundTestPlayers.removeAll()
+	for fake, folder in fakes do
+		fakes[fake] = nil
+		if joined and joined.connection.Connected then
+			joined.onRemoving(asPlayer(fake))
+		end
+		if fake.Character then
+			fake.Character:Destroy()
+			fake.Character = nil
+		end
+		fake.Parent = nil
+		folder:Destroy()
+	end
+end
+
+-- Runs the attached RoundService's Exit.Touched handler for this part, as if it touched Hall.Exit, without
+-- physics. Returns false (and does nothing) if start() hasn't connected the exit, or stop() has dropped it.
+function RoundTestPlayers.touchExit(hit: BasePart): boolean
+	if not (exitHandler and exitHandler.connection.Connected) then
+		return false
+	end
+	exitHandler.onTouched(hit)
+	return true
+end
+
+return RoundTestPlayers

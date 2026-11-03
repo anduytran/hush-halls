@@ -46,35 +46,43 @@ local platform: BasePart? = nil
 local lobbyTime: number = LOBBY_TIME
 local runTime: number = RUN_TIME
 local endedTime: number = ENDED_TIME
--- Sprint 21: Studio-only stand-in players made by _test.addFakePlayer, each with the Folder that holds its
--- attributes and leaderstats. Always empty in a live game. The loop counts them as players in the server.
-local fakePlayers: { [Player]: Folder } = {}
--- Set by start() while it runs: how a fake joins and leaves (as PlayerAdded/PlayerRemoving would), and the
--- Exit.Touched handler, so a spec can touch the exit without physics.
-local joinFake: ((Player) -> ())? = nil
-local leaveFake: ((Player) -> ())? = nil
-local exitTouched: ((BasePart) -> ())? = nil
+-- Sprint 22: where the round gets its players, and how start() hears joins, leaves and exit touches.
+-- In a live game this is always defaultSource (the Players service and Exit.Touched). A Studio spec can swap in
+-- RoundTestPlayers' source with _test.setPlayerSource; nothing in this module knows about stand-in players.
+export type PlayerSource = {
+	getPlayers: () -> { Player },
+	playerFromCharacter: (character: Model) -> Player?,
+	-- Calls onAdded and onRemoving as players join and leave. start() keeps the connections; stop() drops them.
+	connectPlayers: (onAdded: (Player) -> (), onRemoving: (Player) -> ()) -> { RBXScriptConnection },
+	-- Calls onTouched with each part that touches the exit.
+	connectExit: (exit: BasePart, onTouched: (BasePart) -> ()) -> RBXScriptConnection,
+}
 
--- Every player in the server, plus any fakes.
+local defaultSource: PlayerSource = {
+	getPlayers = function()
+		return Players:GetPlayers()
+	end,
+	playerFromCharacter = function(character)
+		return Players:GetPlayerFromCharacter(character)
+	end,
+	connectPlayers = function(onAdded, onRemoving)
+		return { Players.PlayerAdded:Connect(onAdded), Players.PlayerRemoving:Connect(onRemoving) }
+	end,
+	connectExit = function(exit, onTouched)
+		return exit.Touched:Connect(onTouched)
+	end,
+}
+local source: PlayerSource = defaultSource
+
 local function getPlayers(): { Player }
-	local list = Players:GetPlayers()
-	for fake in fakePlayers do
-		table.insert(list, fake)
-	end
-	return list
+	return source.getPlayers()
 end
 
-local function playerFromCharacter(character: Model): Player?
-	local player = Players:GetPlayerFromCharacter(character)
-	if player then
-		return player
-	end
-	for fake in fakePlayers do
-		if fake.Character == character then
-			return fake
-		end
-	end
-	return nil
+-- Every warning goes through here, so a spec can watch this module's warnings (via _test.onWarn) without
+-- matching message text.
+local function report(message: string)
+	warn(message)
+	RoundService._test.onWarn(message)
 end
 
 local function setupLeaderstats(player: Player)
@@ -87,7 +95,7 @@ local function setupLeaderstats(player: Player)
 	coins.Name = "Coins"
 	coins.Value = 0
 	coins.Parent = leaderstats
-	leaderstats.Parent = fakePlayers[player] or player
+	leaderstats.Parent = player
 end
 
 local function addCoins(player: Player, amount: number)
@@ -164,7 +172,7 @@ local function loadCharacter(player: Player): Model?
 		if ok and player.Character then
 			return player.Character
 		end
-		warn(`[RoundService] LoadCharacter failed for {player.Name} (attempt {attempt}): {err}`)
+		report(`[RoundService] LoadCharacter failed for {player.Name} (attempt {attempt}): {err}`)
 		task.wait(LOAD_RETRY_DELAY)
 	end
 	return player.Character
@@ -181,7 +189,6 @@ local function teardown()
 		connection:Disconnect()
 	end
 	table.clear(connections)
-	joinFake, leaveFake, exitTouched = nil, nil, nil
 	round += 1 -- spawns still running from the old loop see a newer round and give up
 	table.clear(participants)
 	table.clear(dead)
@@ -259,9 +266,9 @@ function RoundService.start()
 		for _, player in getPlayers() do
 			onPlayerAdded(player)
 		end
-		table.insert(connections, Players.PlayerAdded:Connect(onPlayerAdded))
-		table.insert(connections, Players.PlayerRemoving:Connect(onPlayerRemoving))
-		joinFake, leaveFake = onPlayerAdded, onPlayerRemoving
+		for _, connection in source.connectPlayers(onPlayerAdded, onPlayerRemoving) do
+			table.insert(connections, connection)
+		end
 	end)
 
 	step("the exit", function()
@@ -273,7 +280,7 @@ function RoundService.start()
 			if not character then
 				return
 			end
-			local player = playerFromCharacter(character)
+			local player = source.playerFromCharacter(character)
 			if not player or not isActive(player) then
 				return
 			end
@@ -287,8 +294,7 @@ function RoundService.start()
 			sendToPlatform(player)
 		end
 
-		table.insert(connections, exit.Touched:Connect(onTouched))
-		exitTouched = onTouched
+		table.insert(connections, source.connectExit(exit, onTouched))
 	end)
 
 	-- Sprint-7 fix: spawnAtStart is defined inside the round loop's step, so it's covered by its pcall and rollback.
@@ -346,7 +352,7 @@ function RoundService.start()
 					task.spawn(function()
 						local ok, err = pcall(spawnAtStart, player, thisRound)
 						if not ok then
-							warn(`[RoundService] couldn't spawn {player.Name}: {err}`)
+							report(`[RoundService] couldn't spawn {player.Name}: {err}`)
 							participants[player] = nil
 						end
 						pending -= 1
@@ -469,83 +475,20 @@ RoundService._test = {
 	durations = function(): (number, number, number)
 		return lobbyTime, runTime, endedTime
 	end,
-	-- Sprint 21: Studio only. Adds a stand-in player the round treats like a real one: it joins as PlayerAdded
-	-- would (if start() has run) and gets a character at once, as Roblox's auto-spawn would. The character is an
-	-- anchored HumanoidRootPart and a Humanoid; LoadCharacter replaces it. removeFakePlayers() takes them all out.
-	addFakePlayer = function(name: string): Player
-		if not RunService:IsStudio() then
-			error("RoundService._test.addFakePlayer only works in Studio", 2)
+	-- Sprint 22: Studio only. Swaps where the round gets its players (RoundTestPlayers uses this); nil puts back
+	-- the Players service. The loop reads the source live; start() connects through the source it sees, so set
+	-- it before start(). Sprint 21's stand-in players live in RoundTestPlayers.luau, not here.
+	setPlayerSource = function(newSource: PlayerSource?)
+		if newSource ~= nil and not RunService:IsStudio() then
+			error("RoundService._test.setPlayerSource only works in Studio", 2)
 		end
-		local folder = Instance.new("Folder")
-		folder.Name = name
-		local characterAdded = Instance.new("BindableEvent")
-		characterAdded.Parent = folder
-		local fake: any = {
-			Name = name,
-			Parent = Players,
-			Character = nil,
-			CharacterAdded = characterAdded.Event,
-		}
-		function fake.SetAttribute(_self: any, attribute: string, value: any)
-			folder:SetAttribute(attribute, value)
-		end
-		function fake.GetAttribute(_self: any, attribute: string): any
-			return folder:GetAttribute(attribute)
-		end
-		function fake.GetAttributeChangedSignal(_self: any, attribute: string): RBXScriptSignal
-			return folder:GetAttributeChangedSignal(attribute)
-		end
-		function fake.FindFirstChild(_self: any, childName: string): Instance?
-			return folder:FindFirstChild(childName)
-		end
-		function fake.LoadCharacter(self: any)
-			if self.Character then
-				self.Character:Destroy()
-			end
-			local character = Instance.new("Model")
-			character.Name = name
-			local root = Instance.new("Part")
-			root.Name = "HumanoidRootPart"
-			root.Anchored = true
-			root.CanCollide = false
-			root.Size = Vector3.new(2, 2, 1)
-			root.Parent = character
-			character.PrimaryPart = root
-			local humanoid = Instance.new("Humanoid")
-			humanoid.RequiresNeck = false
-			humanoid.Parent = character
-			character.Parent = workspace
-			self.Character = character
-			characterAdded:Fire(character)
-		end
-		local player = fake :: Player
-		fakePlayers[player] = folder
-		if joinFake then
-			joinFake(player)
-		end
-		player:LoadCharacter()
-		return player
+		source = newSource or defaultSource
 	end,
-	removeFakePlayers = function()
-		for player, folder in fakePlayers do
-			fakePlayers[player] = nil
-			if leaveFake then
-				leaveFake(player)
-			end
-			if player.Character then
-				player.Character:Destroy()
-			end
-			(player :: any).Parent = nil
-			folder:Destroy()
-		end
+	usingDefaultSource = function(): boolean
+		return source == defaultSource
 	end,
-	-- Sprint 21: Studio only. Runs start()'s Exit.Touched handler for this part, as if it touched Hall.Exit.
-	touchExit = function(hit: BasePart)
-		if not RunService:IsStudio() then
-			error("RoundService._test.touchExit only works in Studio", 2)
-		end
-		assert(exitTouched, "RoundService._test.touchExit: start() hasn't set up the exit")(hit)
-	end,
+	-- Sprint 22: called with each warning this module prints. A no-op unless a spec swaps it.
+	onWarn = function(_message: string) end,
 }
 
 return RoundService

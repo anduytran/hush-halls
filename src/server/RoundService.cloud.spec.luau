@@ -4,10 +4,11 @@
 -- Most tests check player-less behaviour. Sprint 20: the end-to-end round test needs a real Player (a Studio
 -- play-test) and Studio's _test.setDurations; it skips itself without them.
 local RoundService = require("./RoundService")
+local RoundTestPlayers = require("./RoundTestPlayers")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local LogService = game:GetService("LogService")
+local ScriptContext = game:GetService("ScriptContext")
 
 local state = ReplicatedStorage:WaitForChild("State", 10)
 assert(state and state:IsA("Folder"), "ReplicatedStorage.State missing")
@@ -54,8 +55,8 @@ end
 local function resetState()
 	RoundService._test.failStep(nil)
 	RoundService._test.resetDurations()
-	RoundService._test.removeFakePlayers()
 	RoundService.stop()
+	RoundTestPlayers.detach()
 	state:SetAttribute("RoundState", nil)
 	state:SetAttribute("TimeLeft", nil)
 	local currentHall = workspace:FindFirstChild("Hall")
@@ -125,38 +126,65 @@ local function anotherLoopRunning(): boolean
 	return changed
 end
 
--- Sprint 21: the fake-player round tests need Studio (setDurations, addFakePlayer) and no other loop writing State.
+-- Sprint 21: the fake-player round tests need Studio (setDurations, RoundTestPlayers) and no other loop writing
+-- State. Sprint 22: when they can run, this also wires RoundTestPlayers into the (now stopped) RoundService.
 local function fakeRoundSkipped(what: string): boolean
 	if not RunService:IsStudio() then
-		warn(`[RoundService.cloud.spec] {what} skipped: the fake-player hooks are Studio only`)
+		warn(`[RoundService.cloud.spec] {what} skipped: RoundTestPlayers is Studio only`)
 		return true
 	end
 	if anotherLoopRunning() then
 		warn(`[RoundService.cloud.spec] {what} skipped: another RoundService loop is writing State`)
 		return true
 	end
+	RoundTestPlayers.attach(RoundService)
 	return false
 end
 
--- Sprint 21: collects every warning and error RoundService prints (its "[RoundService]" warns, and errors whose
--- message or stack names the RoundService script) until the returned function is called; that returns them.
--- This spec's own "[RoundService.cloud.spec]" lines are ignored.
+-- Sprint 22: the module scripts whose errors fail a test, found by instance (this spec is their sibling).
+local watchedScripts: { Instance } = {}
+for _, name in { "RoundService", "RoundTestPlayers" } do
+	local module = script.Parent and script.Parent:FindFirstChild(name)
+	if module then
+		table.insert(watchedScripts, module)
+	end
+end
+
+-- True if the error came from a watched script: it is the erroring script, or a line of the stack trace is in
+-- it ("<full name>:<line>" or "<full name>, line <n>", so "RoundService.cloud.spec" doesn't count).
+local function fromWatchedScript(errorScript: Instance?, trace: string): boolean
+	for _, module in watchedScripts do
+		local fullName = module:GetFullName()
+		if
+			errorScript == module
+			or string.find(trace, fullName .. ":", 1, true)
+			or string.find(trace, fullName .. ", line", 1, true)
+		then
+			return true
+		end
+	end
+	return false
+end
+
+-- Sprint 21: collects RoundService's warnings and errors until the returned function is called; that returns them.
+-- Sprint 22: matched by source, not message text: warnings arrive through this instance's _test.onWarn hook (every
+-- RoundService warn goes through it), errors through ScriptContext.Error when the erroring script or its stack
+-- trace is RoundService or RoundTestPlayers. Errors caught by a pcall (as failStep's are) aren't reported.
 local function watchRoundServiceLogs(): () -> { string }
 	local messages: { string } = {}
-	local connection = LogService.MessageOut:Connect(function(message, messageType)
-		if messageType ~= Enum.MessageType.MessageWarning and messageType ~= Enum.MessageType.MessageError then
-			return
-		end
-		if
-			string.find(message, "RoundService", 1, true)
-			and not string.find(message, "RoundService.cloud.spec", 1, true)
-		then
+	local previousOnWarn = RoundService._test.onWarn
+	RoundService._test.onWarn = function(message: string)
+		table.insert(messages, message)
+	end
+	local connection = ScriptContext.Error:Connect(function(message, trace, errorScript)
+		if fromWatchedScript(errorScript, trace) then
 			table.insert(messages, message)
 		end
 	end)
 	return function()
-		task.wait() -- messages printed this frame can arrive a frame late
+		task.wait() -- errors raised this frame can arrive a frame late
 		connection:Disconnect()
+		RoundService._test.onWarn = previousOnWarn
 		return messages
 	end
 end
@@ -184,30 +212,50 @@ local function waitForState(roundState: string, timeout: number, onFrame: (() ->
 	end
 end
 
-local function coinsOf(player: Player): any
+-- Sprint 22: waits (checking each frame) until done() is true, or errors after timeout seconds. Timeouts are
+-- generous: the tests wait for state changes, not for a set time.
+local function waitUntil(what: string, timeout: number, done: () -> boolean)
+	local deadline = os.clock() + timeout
+	while not done() do
+		assert(os.clock() < deadline, `timed out after {timeout}s waiting for {what}`)
+		RunService.Heartbeat:Wait()
+	end
+end
+
+local function coinsOf(player: RoundTestPlayers.FakePlayer): any
 	local leaderstats = player:FindFirstChild("leaderstats")
 	local coins = leaderstats and leaderstats:FindFirstChild("Coins")
 	return if coins and coins:IsA("IntValue") then coins.Value else nil
 end
 
 -- The character stands on the platform: sendToPlatform puts it 4 studs up, within 12 studs on X and Z.
-local function assertOnPlatform(player: Player, platform: BasePart)
+local function onPlatform(player: RoundTestPlayers.FakePlayer, platform: BasePart): (boolean, string)
 	local character = player.Character
-	assert(character, `{player.Name} has no character`)
+	if not character then
+		return false, `{player.Name} has no character`
+	end
 	local position = character:GetPivot().Position
 	local flat = Vector3.new(position.X - platform.Position.X, 0, position.Z - platform.Position.Z)
-	assert(flat.Magnitude <= 18, `expected {player.Name} over the platform, was {flat.Magnitude} studs off`)
-	assert(
-		math.abs(position.Y - (platform.Position.Y + 4)) < 0.5,
-		`expected {player.Name} 4 studs above the platform, got Y {position.Y}`
-	)
+	if flat.Magnitude > 18 then
+		return false, `expected {player.Name} over the platform, was {flat.Magnitude} studs off`
+	end
+	if math.abs(position.Y - (platform.Position.Y + 4)) >= 0.5 then
+		return false, `expected {player.Name} 4 studs above the platform, got Y {position.Y}`
+	end
+	return true, ""
+end
+
+local function assertOnPlatform(player: RoundTestPlayers.FakePlayer, platform: BasePart)
+	local ok, why = onPlatform(player, platform)
+	assert(ok, why)
 end
 
 local tests = {
 	["a player joining while the round is spawning lands on the platform"] = function()
-		task.wait(0.5) -- start() waits for Hall.Start/Exit before the platform exists
-		local platform = RoundService._test.platform()
-		assert(platform, "start() should have made Hall.LobbyPlatform")
+		waitUntil("start() to make Hall.LobbyPlatform", 10, function()
+			return RoundService._test.platform() ~= nil
+		end)
+		local platform = RoundService._test.platform() :: BasePart
 		local player, character, cleanup = fakeJoiner()
 		RoundService._test.setSpawning(true)
 		local ok, err = pcall(RoundService._test.placeSpectator, player, character)
@@ -224,7 +272,9 @@ local tests = {
 	end,
 
 	["a player joining in Lobby (not spawning) stays where they spawned"] = function()
-		task.wait(0.5)
+		waitUntil("RoundState Lobby", 10, function()
+			return state:GetAttribute("RoundState") == "Lobby"
+		end)
 		local player, character, cleanup = fakeJoiner()
 		RoundService._test.placeSpectator(player, character)
 		local position = character:GetPivot().Position
@@ -264,11 +314,9 @@ local tests = {
 		state:SetAttribute("RoundState", nil)
 		state:SetAttribute("TimeLeft", nil)
 		RoundService.start()
-		task.wait(0.5)
-		assert(
-			state:GetAttribute("RoundState") == "Lobby",
-			"expected Lobby after restart, got " .. tostring(state:GetAttribute("RoundState"))
-		)
+		waitUntil("Lobby after the restart", 10, function()
+			return state:GetAttribute("RoundState") == "Lobby"
+		end)
 	end,
 
 	["stop() when not started is a safe no-op"] = function()
@@ -286,22 +334,23 @@ local tests = {
 		assert(thread, "start() should have started the loop")
 		RoundService.stop()
 		assert(RoundService._test.loop() == nil, "stop() should clear the loop")
-		task.wait(1.5)
-		assert(
-			coroutine.status(thread) == "dead",
-			"expected the stopped loop to be dead, was " .. coroutine.status(thread)
-		)
+		waitUntil(`the stopped loop to be dead (was {coroutine.status(thread)})`, 5, function()
+			return coroutine.status(thread) == "dead"
+		end)
 	end,
 
 	["stop() clears the platform and start() finds it again"] = function()
-		task.wait(0.5)
-		local before = RoundService._test.platform()
-		assert(before, "start() should have made Hall.LobbyPlatform")
+		waitUntil("start() to make Hall.LobbyPlatform", 10, function()
+			return RoundService._test.platform() ~= nil
+		end)
+		local before = RoundService._test.platform() :: BasePart
 		assert(before.Parent and before.Parent.Name == "Hall", "the platform should be in Hall")
 		RoundService.stop()
 		assert(RoundService._test.platform() == nil, "stop() should reset platform to nil")
 		RoundService.start()
-		task.wait(0.5)
+		waitUntil("start() to find the platform again", 10, function()
+			return RoundService._test.platform() ~= nil
+		end)
 		assert(RoundService._test.platform() == before, "start() should reuse the existing Hall.LobbyPlatform")
 	end,
 
@@ -434,17 +483,19 @@ local tests = {
 		assert(lobby == 15 and running == 120 and ended == 5, `expected 15/120/5, got {lobby}/{running}/{ended}`)
 		RoundService.start()
 		assert(state:GetAttribute("TimeLeft") == 15, `expected TimeLeft 15, got {state:GetAttribute("TimeLeft")}`)
-		task.wait(0.9)
-		assert(
-			state:GetAttribute("TimeLeft") == 15,
-			`expected TimeLeft 15 before a second, got {state:GetAttribute("TimeLeft")}`
-		)
-		task.wait(0.3)
+		-- Sprint 22: waits for the first change instead of sampling at set times. The next value must be 14,
+		-- still in Lobby, and it can't come early (task.wait never returns early, so 0.5s is a safe floor).
+		local started = os.clock()
+		waitUntil("TimeLeft to leave 15", 10, function()
+			return state:GetAttribute("TimeLeft") ~= 15
+		end)
+		local elapsed = os.clock() - started
 		assert(
 			state:GetAttribute("TimeLeft") == 14,
-			`expected TimeLeft 14 after a second, got {state:GetAttribute("TimeLeft")}`
+			`expected TimeLeft 14 after 15, got {state:GetAttribute("TimeLeft")}`
 		)
 		assert(state:GetAttribute("RoundState") == "Lobby", "expected Lobby")
+		assert(elapsed >= 0.5, `TimeLeft went 15 -> 14 after only {elapsed}s; a Lobby second should last 1s`)
 	end,
 
 	-- Sprint 20: end-to-end smoke of one round with durations 1/2/1. Samples State and every present player each
@@ -645,37 +696,46 @@ local tests = {
 			return
 		end
 		RoundService._test.setDurations(1, 3, 1)
-		local runner = RoundService._test.addFakePlayer("SpecRunner")
-		local stayer = RoundService._test.addFakePlayer("SpecStayer")
+		local runner = RoundTestPlayers.add("SpecRunner")
+		local stayer = RoundTestPlayers.add("SpecStayer")
 		RoundService.start()
 		assert(coinsOf(runner) == 0 and coinsOf(stayer) == 0, "fake players should start with 0 Coins")
 
 		waitForState("Running", 15)
-		local runningStarted = os.clock()
 		for _, player in { runner, stayer } do
 			assert(player:GetAttribute("InRound") == true, `{player.Name} should be InRound when Running begins`)
 		end
 
 		local root = (runner.Character :: Model):FindFirstChild("HumanoidRootPart") :: BasePart
-		RoundService._test.touchExit(root)
+		assert(RoundTestPlayers.touchExit(root), "touchExit should reach start()'s exit handler")
 		assert(runner:GetAttribute("Escaped") == true, "touching the exit should mark the runner Escaped")
 		assert(runner:GetAttribute("InRound") == false, "an escaped runner should leave InRound")
 		assert(coinsOf(runner) == 10, `the first touch should pay 10 Coins, got {tostring(coinsOf(runner))}`)
 		RunService.Heartbeat:Wait()
-		RoundService._test.touchExit(root)
+		assert(RoundTestPlayers.touchExit(root), "the second touchExit should reach the handler too")
 		assert(coinsOf(runner) == 10, `a second touch must not pay again, got {tostring(coinsOf(runner))}`)
 		local platform = RoundService._test.platform()
 		assert(platform, "start() should have made Hall.LobbyPlatform")
 		assertOnPlatform(runner, platform)
 
-		waitForState("Ended", 10, function()
+		-- Sprint 22: Running must run out its clock while the stayer is in, rather than end early. Checked by state,
+		-- not time: Running is seen in its last second (TimeLeft 1). The loop writes 0 and switches to Ended in one
+		-- step, so 0 itself is never seen while Running.
+		local lowestRunningTime = math.huge
+		waitForState("Ended", 15, function()
 			assert(stayer:GetAttribute("InRound") == true, "the stayer should stay InRound all through Running")
 			assert(runner:GetAttribute("InRound") == false, "the escaped runner must not be InRound again")
+			local timeLeft = state:GetAttribute("TimeLeft")
+			if state:GetAttribute("RoundState") == "Running" and type(timeLeft) == "number" then
+				lowestRunningTime = math.min(lowestRunningTime, timeLeft)
+			end
 		end)
-		local runLength = os.clock() - runningStarted
-		assert(runLength >= 2.5, `Running should last its 3s while the stayer is in, ended after {runLength}s`)
+		assert(
+			lowestRunningTime <= 1,
+			`Running should count down to its last second while the stayer is in, lowest TimeLeft {lowestRunningTime}`
+		)
 
-		waitForState("Lobby", 5, function()
+		waitForState("Lobby", 15, function()
 			for _, player in { runner, stayer } do
 				assert(player:GetAttribute("InRound") == false, `{player.Name} should not be InRound in Ended`)
 			end
@@ -691,12 +751,12 @@ local tests = {
 			return
 		end
 		RoundService._test.setDurations(1, 2, 1)
-		local player = RoundService._test.addFakePlayer("SpecPlayer")
+		local player = RoundTestPlayers.add("SpecPlayer")
 		RoundService.start()
 
 		waitForState("Running", 15)
 		assert(player:GetAttribute("InRound") == true, "the round's player should be InRound")
-		local joiner = RoundService._test.addFakePlayer("SpecLateJoiner")
+		local joiner = RoundTestPlayers.add("SpecLateJoiner")
 		assert(joiner:GetAttribute("InRound") ~= true, "a player who joined mid-round must not be InRound")
 		-- Every change to the joiner's InRound is checked as it happens. The only time it may turn true is the next
 		-- round's spawn, at the end of the next Lobby's countdown (Lobby, TimeLeft 0).
@@ -708,14 +768,19 @@ local tests = {
 			end
 		end)
 		local ok, err = pcall(function()
-			task.wait(0.25) -- placeSpectator runs on CharacterAdded, which may be deferred
-			assert(state:GetAttribute("RoundState") == "Running", "Running ended before the joiner could be checked")
+			-- placeSpectator runs on CharacterAdded, which may be deferred: wait for the joiner to arrive.
 			local platform = RoundService._test.platform()
 			assert(platform, "start() should have made Hall.LobbyPlatform")
-			assertOnPlatform(joiner, platform)
+			waitUntil("the joiner to reach the platform", 5, function()
+				return (onPlatform(joiner, platform))
+			end)
+			assert(
+				state:GetAttribute("RoundState") == "Running",
+				"Running ended before the joiner reached the platform"
+			)
 
-			waitForState("Ended", 10)
-			waitForState("Lobby", 5)
+			waitForState("Ended", 15)
+			waitForState("Lobby", 15)
 			waitForState("Running", 15)
 		end)
 		connection:Disconnect()
