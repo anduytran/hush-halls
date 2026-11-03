@@ -3,8 +3,11 @@
 --   Monetization.onPass("VIP", function(player) ... end)            -- runs when an owner joins, and right after buying
 --   Monetization.onProduct("Coins100", function(player) ... return true end)  -- return true once it's given
 -- A product's receipt is reserved in a DataStore before its handler runs and marked done after,
--- so a purchase Roblox retries is never given twice. The handler runs outside UpdateAsync and must not yield
--- (no waits or Async calls): a handler that yields is stopped and counts as a failed grant.
+-- so a purchase Roblox retries is never given twice. The handler runs outside UpdateAsync and MUST NOT YIELD
+-- (no task.wait, no Async calls, no WaitForChild): it has to give the product and return straight away.
+-- Sprint-7 fix: a handler that yields anyway is not stopped (stopping it could leave a half-done grant). It's
+-- logged, the receipt answers NotProcessedYet and keeps its pending marker, and if the handler finishes later
+-- the receipt is marked done then, so Roblox's retry grants nothing more.
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
@@ -16,9 +19,11 @@ local Monetization = {}
 
 -- A "pending" receipt marker older than this (seconds) is from an attempt that died mid-grant
 -- (its server shut down, taking the unsaved grant with it), so a retry may take it over.
--- Sprint-6 fix: raised from 120 s. The grant no longer yields, so a live attempt only holds the marker for
--- two DataStore calls; 600 s leaves a wide margin before anyone may take it over.
-local PENDING_TIMEOUT = 600
+-- Sprint-6 fix: raised from 120 s. The grant doesn't yield, so a live attempt only holds the marker for
+-- two DataStore calls.
+-- Sprint-7 fix: lowered to 180 s, still far past two DataStore calls, so a purchase whose server died
+-- mid-grant is retried after 3 minutes instead of 10.
+local PENDING_TIMEOUT = 180
 
 type PassHandler = (player: Player) -> ()
 type ProductHandler = (player: Player) -> boolean
@@ -137,16 +142,30 @@ local function isOurs(value: any, token: string): boolean
 	return type(value) == "table" and value.token == token
 end
 
--- Sprint-6 fix: runs the grant to completion without letting it yield. If the handler yields, it is stopped
--- there (closed, so it never resumes) and counts as failed. Returns (ok, given or error).
-local function grantWithoutYield(grant: ProductHandler, buyer: Player): (boolean, any)
-	local thread = coroutine.create(grant)
-	local resumed, given = coroutine.resume(thread, buyer)
+-- Sprint-7 fix: runs the grant synchronously in its own coroutine and never cancels it. Returns
+-- (true, ok, given) if it finished without yielding, or (false) if it yielded. A yielded grant keeps running
+-- when the engine resumes it, and `onLate(ok, given)` is called once it finishes.
+local function runGrant(
+	grant: ProductHandler,
+	buyer: Player,
+	onLate: (ok: boolean, given: any) -> ()
+): (boolean, boolean, any)
+	local yielded = false
+	local resultOk, resultGiven = false, nil
+	local thread = coroutine.create(function()
+		local ok, given = pcall(grant, buyer)
+		if yielded then
+			onLate(ok, given)
+		else
+			resultOk, resultGiven = ok, given
+		end
+	end)
+	coroutine.resume(thread)
 	if coroutine.status(thread) ~= "dead" then
-		coroutine.close(thread)
-		return false, "the handler yielded; product handlers must not yield"
+		yielded = true
+		return false, false, nil
 	end
-	return resumed, given
+	return true, resultOk, resultGiven
 end
 
 -- Sprint-4 fix: UpdateAsync only reserves the receipt key with a "pending" marker. The grant runs after it
@@ -156,8 +175,8 @@ end
 -- after the reserve is that marker. Marking done only replaces our own marker: if another attempt took the
 -- receipt over meanwhile (ours went stale), its marker is left alone and we return NotProcessedYet.
 -- Sprint-6 fix: the grant runs synchronously, straight after the reserve's fresh token check, with no yield in
--- between or inside it. Our marker could only go stale (600 s) while a DataStore call itself stalls,
--- so a takeover can no longer overlap a grant that's still running.
+-- between. Our marker could only go stale (180 s, sprint-7 fix) while a DataStore call itself stalls,
+-- so a takeover can't overlap a grant that's still running (unless a handler breaks the no-yield rule).
 local function processReceipt(receipt: Receipt, store: DataStore, grant: ProductHandler, buyer: Player)
 	local receiptKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
 	local now = os.time()
@@ -191,8 +210,41 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
-	-- Sprint-6 fix: nothing yields between the token check above and this grant, and the grant can't yield.
-	local grantOk, given = grantWithoutYield(grant, buyer)
+	-- Sprint-5 fix: only our own marker is replaced with "done". Returns (ok, marked or error).
+	local function markDone(): (boolean, any)
+		local marked = false
+		local ok, err = pcall(function()
+			store:UpdateAsync(receiptKey, function(value)
+				marked = isOurs(value, token)
+				if not marked then
+					return nil -- another attempt took it over: leave its marker for it to finish
+				end
+				return { status = "done", at = now, token = token }
+			end)
+		end)
+		return ok, if ok then marked else err
+	end
+
+	-- Sprint-6 fix: nothing yields between the token check above and this grant.
+	-- Sprint-7 fix: a grant that yields isn't cancelled. Our marker stays (a retry within PENDING_TIMEOUT sees it
+	-- busy) and is marked done when the grant finishes; if the grant fails late, the marker is left to go stale.
+	local finished, grantOk, given = runGrant(grant, buyer, function(lateOk, lateGiven)
+		if not lateOk or lateGiven ~= true then
+			warn(`[Monetization] yielding handler failed late for purchase {receipt.PurchaseId}: {lateGiven}`)
+			return
+		end
+		local lateDoneOk, lateMarked = markDone()
+		if not lateDoneOk or not lateMarked then
+			warn(`[Monetization] yielding handler granted purchase {receipt.PurchaseId} late; couldn't record it`)
+		end
+	end)
+	if not finished then
+		warn(
+			`[Monetization] handler for purchase {receipt.PurchaseId} yielded; product handlers must not yield.`
+				.. " Answering NotProcessedYet until it finishes."
+		)
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
 	if not grantOk or given ~= true then
 		if not grantOk then
 			warn(`[Monetization] handler failed for purchase {receipt.PurchaseId}: {given}`)
@@ -207,20 +259,10 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
-	-- Sprint-5 fix: only our own marker is replaced with "done".
-	local marked = false
-	local doneOk, doneErr = pcall(function()
-		store:UpdateAsync(receiptKey, function(value)
-			marked = isOurs(value, token)
-			if not marked then
-				return nil -- another attempt took it over: leave its marker for it to finish
-			end
-			return { status = "done", at = now, token = token }
-		end)
-	end)
+	local doneOk, marked = markDone()
 	if not doneOk then
 		-- It was given, so tell Roblox it's done rather than risk giving it again on retry.
-		warn(`[Monetization] granted purchase {receipt.PurchaseId} but couldn't record it: {doneErr}`)
+		warn(`[Monetization] granted purchase {receipt.PurchaseId} but couldn't record it: {marked}`)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 	if not marked then

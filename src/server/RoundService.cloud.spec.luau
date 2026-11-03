@@ -10,18 +10,61 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local state = ReplicatedStorage:WaitForChild("State", 10)
 assert(state and state:IsA("Folder"), "ReplicatedStorage.State missing")
 
+-- Sprint-7 fix: the original Hall.LobbyPlatform is remembered here, before any test runs. It is never destroyed:
+-- resetState detaches it (Parent = nil) and afterEach puts it back in Hall. Only platforms this spec makes are
+-- destroyed.
+local hall = workspace:FindFirstChild("Hall")
+local originalPlatform: BasePart? = hall and hall:FindFirstChild("LobbyPlatform") :: BasePart?
+
+-- Sprint-7 fix: skip the whole suite if a live round is running, or a player is standing on the original platform
+-- (so a test can't move someone or tear down a platform that is in use).
+local function platformInUse(platform: BasePart): boolean
+	local half = platform.Size / 2
+	local topY = platform.Position.Y + half.Y
+	for _, player in Players:GetPlayers() do
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if root and root:IsA("BasePart") then
+			local offset = root.Position - platform.Position
+			local height = root.Position.Y - topY
+			if math.abs(offset.X) <= half.X and math.abs(offset.Z) <= half.Z and height >= 0 and height <= 20 then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+if state:GetAttribute("RoundState") == "Running" then
+	warn("[RoundService.cloud.spec] skipped: a round is Running on this server")
+	return {}
+end
+if originalPlatform and platformInUse(originalPlatform) then
+	warn("[RoundService.cloud.spec] skipped: a player is standing on Hall.LobbyPlatform")
+	return {}
+end
+
 -- Sprint-6 fix: no test depends on what an earlier test left behind. Before each test the service is stopped,
--- any forced failure is cleared, State is wiped and Hall.LobbyPlatform is removed, so start() makes a new one;
+-- any forced failure is cleared, State is wiped and Hall.LobbyPlatform is replaced, so start() makes a new one;
 -- after each test (even a failed one) the service is stopped again.
+-- Sprint-7 fix: the original platform is detached (Parent = nil) rather than destroyed. Any other platform
+-- in Hall is one this spec made, and it is destroyed.
 local function resetState()
 	RoundService._test.failStep(nil)
 	RoundService.stop()
 	state:SetAttribute("RoundState", nil)
 	state:SetAttribute("TimeLeft", nil)
-	local hall = workspace:FindFirstChild("Hall")
-	local oldPlatform = hall and hall:FindFirstChild("LobbyPlatform")
-	if oldPlatform then
-		oldPlatform:Destroy()
+	local currentHall = workspace:FindFirstChild("Hall")
+	if currentHall then
+		for _, child in currentHall:GetChildren() do
+			if child.Name == "LobbyPlatform" then
+				if child == originalPlatform then
+					child.Parent = nil
+				else
+					child:Destroy()
+				end
+			end
+		end
 	end
 end
 
@@ -30,8 +73,13 @@ local function beforeEach()
 	RoundService.start()
 end
 
+-- Sprint-7 fix: puts the original platform back in Hall. resetState has already destroyed any spec-made platform.
 local function afterEach()
 	resetState()
+	local currentHall = workspace:FindFirstChild("Hall")
+	if originalPlatform and currentHall then
+		originalPlatform.Parent = currentHall
+	end
 end
 
 -- A stand-in character, and a stand-in player who isn't in the round (RoundService only reads .Character
@@ -155,11 +203,12 @@ local tests = {
 	end,
 
 	["each test starts with a newly made platform"] = function()
-		-- beforeEach removed any platform left over, so this one was made by this test's start().
-		local hall = workspace:FindFirstChild("Hall")
-		assert(hall, "start() should have found or built the Hall")
+		-- beforeEach detached the original platform and removed any spec-made one, so this one was made by
+		-- this test's start().
+		local currentHall = workspace:FindFirstChild("Hall")
+		assert(currentHall, "start() should have found or built the Hall")
 		local platforms = 0
-		for _, child in hall:GetChildren() do
+		for _, child in currentHall:GetChildren() do
 			if child.Name == "LobbyPlatform" then
 				platforms += 1
 			end
@@ -189,6 +238,31 @@ local tests = {
 		local count = RoundService._test.connectionCount()
 		assert(count == expected, `expected {expected} connections after a retry, got {count}`)
 		assert(RoundService._test.loop(), "a retry should start the loop")
+	end,
+
+	-- Sprint-7 fix: beforeStep is the hook start() calls before each setup step. It must be a function, both
+	-- at the default and after failStep(nil) has cleared a forced failure.
+	["the beforeStep hook is a function, and failStep(nil) restores it"] = function()
+		assert(type(RoundService._test.beforeStep) == "function", "_test.beforeStep should be a function")
+		RoundService._test.failStep("the exit")
+		RoundService._test.failStep(nil)
+		assert(
+			type(RoundService._test.beforeStep) == "function",
+			"_test.beforeStep should still be a function after failStep(nil)"
+		)
+	end,
+
+	-- Sprint-7 fix: after a forced failure is cleared with failStep(nil), start() succeeds and starts the loop.
+	["after failStep(nil) clears a forced failure, start() succeeds"] = function()
+		RoundService.stop()
+		RoundService._test.failStep("the exit")
+		local ok = pcall(RoundService.start)
+		assert(not ok, 'start() should error while "the exit" is forced to fail')
+		RoundService._test.failStep(nil)
+		local startOk, startErr = pcall(RoundService.start)
+		assert(startOk, `start() should succeed after failStep(nil), got {tostring(startErr)}`)
+		assert(RoundService._test.started(), "start() should mark the service started")
+		assert(RoundService._test.loop(), "start() should start the loop")
 	end,
 }
 

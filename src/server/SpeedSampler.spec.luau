@@ -1,7 +1,8 @@
 -- Plain-logic specs for SpeedSampler.luau (run with Lune, no engine).
 -- Positions are plain { X, Z } tables and players/roots are plain tables: the sampler reads nothing else.
 -- Covers sprint-3 criteria 2 (averaging, jitter, min sample, window, new root, forget/clear) and 3 (teleport filter).
--- Since sprint 6 a step over MAX_STEP is clamped to sprint speed instead of resetting the reading to 0.
+-- Sprint-7 fix: a step over MAX_STEP is not counted and doesn't reset the entry. That sample holds the previous
+-- average, and the next step is measured from the new spot. The teleport tests below check the hold.
 local SpeedSampler = require("./SpeedSampler")
 
 -- Speeds are compared with this tolerance (studs/s).
@@ -167,23 +168,48 @@ local tests = {
 		end
 	end,
 
-	-- Sprint-6 fix: a step over MAX_STEP no longer resets the entry to 0. It counts as at most sprint speed for
-	-- its time, and the entry and its deltas are kept. The tests below check the clamp.
-	["a teleporting sprinter never reads 0: the teleport step counts as sprint speed"] = function()
+	-- Sprint-7 fix: a teleporting sprinter holds its average on the teleport sample. It doesn't drop to 0 or spike.
+	["a teleporting sprinter holds about 24 on the teleport sample and stays near 24 after"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
-		-- Sprint 0 to 1.0 s, teleport 100 studs at 1.1 s, then keep sprinting from the new spot.
+		-- Sprint 0 to 1.0 s, teleport 100 studs ahead at 1.1 s, then keep sprinting from the new spot.
 		local track = straight(24, every(0.1, 10))
 		table.insert(track, { time = 1.1, x = 24 * 1.1 + 100 })
 		for i = 1, 10 do
 			table.insert(track, { time = 1.1 + i * 0.1, x = 24 * 1.1 + 100 + 24 * i * 0.1 })
 		end
 		local speeds = feed(sampler, player, root, track)
-		-- The teleport sample is index 12. Clamped, it reads like the sprint around it: no drop, no spike.
+		-- The teleport sample is index 12. Held, it keeps the sprint's average.
+		assertNear(speeds[12], 24, "teleport sample (held)")
 		for i = 2, #speeds do
 			assertNear(speeds[i], 24, `teleporting sprinter, sample {i}`)
 		end
-		assert(speeds[12] >= 14, `the teleport sample must still read as a sprint, read {speeds[12]}`)
+	end,
+
+	-- Sprint-7 fix: a walker at 10 who teleports reads about 10 on the teleport sample. It's held, not counted as a sprint.
+	["a walker at 10 who teleports holds its walking speed on the teleport sample"] = function()
+		local sampler = SpeedSampler.new()
+		local player, root = {}, {}
+		-- Walks at 10 studs/s from 0 to 1.0 s, jumps 500 studs at 1.1 s, then walks on from the new spot.
+		local track = straight(10, every(0.1, 10))
+		table.insert(track, { time = 1.1, x = 510 })
+		table.insert(track, { time = 1.2, x = 511 })
+		local speeds = feed(sampler, player, root, track)
+		assertNear(speeds[11], 10, "walker before the teleport")
+		assert(speeds[12] < 14, `the teleport sample must not read as a sprint, read {speeds[12]}`)
+		assertNear(speeds[12], 10, "walker on the teleport sample (held)")
+		assertNear(speeds[13], 10, "walker one step after the teleport")
+	end,
+
+	-- Sprint-7 fix: a player standing still (reading 0) who teleports still reads 0 on that sample.
+	["a standing player who teleports reads 0 on the teleport sample"] = function()
+		local sampler = SpeedSampler.new()
+		local player, root = {}, {}
+		local track = straight(0, every(0.1, 10))
+		table.insert(track, { time = 1.1, x = 300 })
+		local speeds = feed(sampler, player, root, track)
+		assertNear(speeds[11], 0, "standing player before the teleport")
+		assertNear(speeds[12], 0, "standing player on the teleport sample")
 	end,
 
 	["a step of exactly MAX_STEP counts"] = function()
@@ -195,53 +221,46 @@ local tests = {
 		assertNear(kept, 400, "a 40-stud step", 0.5)
 	end,
 
-	["a step just over MAX_STEP is clamped to sprint speed, not 0"] = function()
+	-- Sprint-7 fix: a step just over MAX_STEP (40.5 studs in 0.1 s) is held, not counted and not a reset.
+	["a step just over MAX_STEP from a first sample holds 0"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
 		sampler.update(player, root, { X = 0, Z = 0 }, 0)
-		local clamped = sampler.update(player, root, { X = 40.5, Z = 0 }, 0.1)
-		assertNear(clamped, 24, "a 40.5-stud step in 0.1 s")
-		assertNear(sampler.speed(player), 24, "speed() after a long step")
+		local held = sampler.update(player, root, { X = 40.5, Z = 0 }, 0.1)
+		assertNear(held, 0, "a 40.5-stud step in 0.1 s")
+		assertNear(sampler.speed(player), 0, "speed() after the held step")
 	end,
 
-	["a huge teleport reads sprint speed, never more"] = function()
+	-- Sprint-7 fix: a huge teleport holds the previous average. It never reads as a sprint on its own.
+	["a huge teleport holds the previous average, never more"] = function()
+		local sampler = SpeedSampler.new()
+		local player, root = {}, {}
+		-- Sprint at 24 studs/s to 1.0 s (reads 24), then a 5000-stud jump at 1.2 s.
+		feed(sampler, player, root, straight(24, every(0.1, 10)))
+		local held = sampler.update(player, root, { X = 24 + 5000, Z = 0 }, 1.2)
+		assertNear(held, 24, "a 5000-stud jump in 0.2 s (held)")
+		assertNear(sampler.speed(player), 24, "speed() after the jump")
+	end,
+
+	-- Sprint-7 fix: a long but slow step is still over MAX_STEP, so it's held rather than counted.
+	["a long slow step after a stall holds the previous average"] = function()
+		local sampler = SpeedSampler.new()
+		local player, root = {}, {}
+		-- Sprint at 24 studs/s to 1.0 s (reads 24), then a stall, then 50 studs in 5 s. Counted, it would read 10.
+		feed(sampler, player, root, straight(24, every(0.1, 10)))
+		local held = sampler.update(player, root, { X = 24 + 50, Z = 0 }, 6.0)
+		assertNear(held, 24, "a 50-stud step after a 5 s stall (held)")
+	end,
+
+	-- Sprint-7 fix: the held step moves the baseline, so the next step is measured from the new spot.
+	["after a held step the next step is measured from the new position"] = function()
 		local sampler = SpeedSampler.new()
 		local player, root = {}, {}
 		sampler.update(player, root, { X = 0, Z = 0 }, 0)
-		local clamped = sampler.update(player, root, { X = 0, Z = 5000 }, 0.2)
-		assertNear(clamped, 24, "a 5000-stud jump in 0.2 s")
-	end,
-
-	["a walker who teleports keeps their walk's deltas and reads between walking and sprint speed"] = function()
-		local sampler = SpeedSampler.new()
-		local player, root = {}, {}
-		-- Walks at 10 studs/s from 0 to 1.0 s, then jumps 500 studs at 1.1 s.
-		local track = straight(10, every(0.1, 10))
-		table.insert(track, { time = 1.1, x = 510 })
-		local speeds = feed(sampler, player, root, track)
-		assertNear(speeds[11], 10, "walker before the teleport")
-		-- The walk's deltas are kept, and the jump adds a 24 studs/s delta: the average lies between the two.
-		assert(speeds[12] > 10 and speeds[12] < 24, `expected between 10 and 24 after the teleport, read {speeds[12]}`)
-	end,
-
-	["after a clamped step the entry is kept and the next step is measured from the new position"] = function()
-		local sampler = SpeedSampler.new()
-		local player, root = {}, {}
-		sampler.update(player, root, { X = 0, Z = 0 }, 0)
-		-- 300 studs in 0.4 s: a teleport, clamped to 24 * 0.4 = 9.6 studs. Raw it would be 750 studs/s.
-		assertNear(sampler.update(player, root, { X = 300, Z = 0 }, 0.4), 24, "a long step reads sprint speed")
-		-- Then 2 studs in 0.2 s from X = 300. Both deltas count: (9.6 + 2) / 0.6, about 19.33.
-		-- Measured from X = 0 it would be clamped to 24 again; with the entry reset it would read 10.
-		assertNear(sampler.update(player, root, { X = 302, Z = 0 }, 0.6), 11.6 / 0.6, "first step after the clamp")
-	end,
-
-	["a long but slow step after a stall keeps its real speed"] = function()
-		local sampler = SpeedSampler.new()
-		local player, root = {}, {}
-		sampler.update(player, root, { X = 0, Z = 0 }, 0)
-		-- 50 studs in 5 s is over MAX_STEP but only 10 studs/s, under sprint speed, so the clamp leaves it at 10.
-		local speed = sampler.update(player, root, { X = 50, Z = 0 }, 5)
-		assertNear(speed, 10, "a 50-stud step after a 5 s stall")
+		-- 300 studs in 0.4 s is a teleport: held at 0 (no deltas yet), and the baseline moves to X = 300.
+		assertNear(sampler.update(player, root, { X = 300, Z = 0 }, 0.4), 0, "the teleport step is held")
+		-- 2 studs in 0.2 s from X = 300 is 10 studs/s. Measured from X = 0 it would be held again, not 10.
+		assertNear(sampler.update(player, root, { X = 302, Z = 0 }, 0.6), 10, "the step after the held one")
 	end,
 
 	["a diagonal step is measured horizontally"] = function()

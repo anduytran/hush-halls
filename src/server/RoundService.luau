@@ -38,8 +38,6 @@ local loop: thread? = nil
 local generation = 0
 -- Where spectators and escaped players wait; set by start().
 local platform: BasePart? = nil
--- TEST-ONLY: the name of a start() setup step to make fail, so specs can check the rollback.
-local failStep: string? = nil
 
 local function setupLeaderstats(player: Player)
 	if player:FindFirstChild("leaderstats") then
@@ -179,11 +177,11 @@ function RoundService.start()
 	-- so main.server's retry starts clean instead of registering the connections a second time.
 	-- Sprint-6 fix: each setup step runs in its own small pcall instead of one big one. A failing step does
 	-- the same rollback (teardown) and the error names the step that failed.
+	-- Sprint-7 fix: no test-only branch here. Each step first calls RoundService._test.beforeStep, a no-op unless a
+	-- spec swaps it (via _test.failStep) to make a step fail.
 	local function step(name: string, fn: () -> ())
 		local ok, err = pcall(function()
-			if failStep == name then
-				error("forced failure (test)")
-			end
+			RoundService._test.beforeStep(name)
 			fn()
 		end)
 		if not ok then
@@ -192,45 +190,23 @@ function RoundService.start()
 		end
 	end
 
-	local function spawnAtStart(player: Player, thisRound: number)
-		local character = loadCharacter(player)
-		if round ~= thisRound or player.Parent ~= Players then
-			return
-		end
-		if not character then
-			-- Couldn't give them a body: drop them from the round so it isn't held open waiting for them.
-			participants[player] = nil
-			return
-		end
-		character:PivotTo(start.CFrame + Vector3.new(math.random(-2, 2), 4, math.random(-2, 2)))
-		local humanoid = character:FindFirstChildOfClass("Humanoid")
-		if humanoid then
-			humanoid.Died:Connect(function()
-				if round == thisRound and participants[player] and not player:GetAttribute("Escaped") then
-					dead[player] = true
-					player:SetAttribute("InRound", false)
-				end
-			end)
-		end
-		player:SetAttribute("InRound", true)
-	end
-
-	local function onPlayerAdded(player: Player)
-		setupLeaderstats(player)
-		player:SetAttribute("InRound", false)
-		table.insert(
-			connections,
-			player.CharacterAdded:Connect(function(character)
-				placeSpectator(player, character)
-			end)
-		)
-	end
-
 	step("the lobby platform", function()
 		platform = makePlatform(hall, start)
 	end)
 
+	-- Sprint-7 fix: onPlayerAdded is defined inside its step, so it's covered by the step's pcall and rollback.
 	step("player setup", function()
+		local function onPlayerAdded(player: Player)
+			setupLeaderstats(player)
+			player:SetAttribute("InRound", false)
+			table.insert(
+				connections,
+				player.CharacterAdded:Connect(function(character)
+					placeSpectator(player, character)
+				end)
+			)
+		end
+
 		for _, player in Players:GetPlayers() do
 			onPlayerAdded(player)
 		end
@@ -271,7 +247,31 @@ function RoundService.start()
 		)
 	end)
 
+	-- Sprint-7 fix: spawnAtStart is defined inside the round loop's step, so it's covered by its pcall and rollback.
 	step("the round loop", function()
+		local function spawnAtStart(player: Player, thisRound: number)
+			local character = loadCharacter(player)
+			if round ~= thisRound or player.Parent ~= Players then
+				return
+			end
+			if not character then
+				-- Couldn't give them a body: drop them from the round so it isn't held open waiting for them.
+				participants[player] = nil
+				return
+			end
+			character:PivotTo(start.CFrame + Vector3.new(math.random(-2, 2), 4, math.random(-2, 2)))
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid then
+				humanoid.Died:Connect(function()
+					if round == thisRound and participants[player] and not player:GetAttribute("Escaped") then
+						dead[player] = true
+						player:SetAttribute("InRound", false)
+					end
+				end)
+			end
+			player:SetAttribute("InRound", true)
+		end
+
 		loop = task.spawn(function()
 			while true do
 				-- Lobby: wait for at least one player, then count down.
@@ -371,10 +371,16 @@ RoundService._test = {
 	loop = function(): thread?
 		return loop
 	end,
+	-- Sprint-7 fix: start() calls this before each setup step. It does nothing unless failStep swaps it.
+	beforeStep = function(_name: string) end,
 	-- Sprint-6 fix: makes the named start() setup step fail ("the lobby platform", "player setup", "the exit",
-	-- "the round loop"); nil turns it off.
+	-- "the round loop"); nil turns it off. Sprint-7 fix: it swaps beforeStep, so start() has no test branch.
 	failStep = function(name: string?)
-		failStep = name
+		RoundService._test.beforeStep = function(stepName: string)
+			if name ~= nil and stepName == name then
+				error("forced failure (test)")
+			end
+		end
 	end,
 	connectionCount = function(): number
 		return #connections

@@ -2,8 +2,8 @@
 -- Server-measured horizontal speed of players, shared by Monster and NoiseService.
 -- Speed is the average of position deltas over the last WINDOW seconds, so one uneven network
 -- update can't make a walker look like a sprinter. Samples closer together than MIN_SAMPLE are
--- skipped. Sprint-6 fix: a single step longer than MAX_STEP studs (a teleport or a lag spike) counts as at
--- most SPRINT_SPEED for its time, and the entry is kept, so a sprinter can't drop to 0 (silent) by teleporting.
+-- skipped. Sprint-7 fix: a single step longer than MAX_STEP studs (a teleport or a lag spike) is not counted
+-- and doesn't reset the entry: that sample holds the previous average, so it reads neither as a sprint nor as 0.
 -- Only .X and .Z of positions are read and no engine API is used, so it can be tested without Roblox.
 
 local SpeedSampler = {}
@@ -48,9 +48,11 @@ function SpeedSampler.new(): Sampler
 			local dx, dz = position.X - entry.x, position.Z - entry.z
 			local distance = math.sqrt(dx * dx + dz * dz)
 			if distance > SpeedSampler.MAX_STEP then
-				-- Sprint-6 fix: a teleport or lag spike must not read 0. Clamp the step to sprint speed (a slower
-				-- long step, e.g. after a stall, keeps its real distance) and keep the entry and its deltas.
-				distance = math.min(distance, SpeedSampler.SPRINT_SPEED * dt)
+				-- Sprint-7 fix: a teleport or lag spike is neither counted (it would read as a sprint) nor a reset
+				-- (it would read 0). The step is dropped, the next one is measured from here, and this sample
+				-- holds the previous average unchanged (no pruning either).
+				entry.x, entry.z, entry.time = position.X, position.Z, now
+				return average(entry.deltas)
 			end
 			table.insert(entry.deltas, { time = now, distance = distance, dt = dt })
 			entry.x, entry.z, entry.time = position.X, position.Z, now
