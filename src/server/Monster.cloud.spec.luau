@@ -89,4 +89,9 @@ return {
 		assert(body.Position.Y >= 3, "expected Y clamped to >= FLOOR_Y + SIZE/2 (3), got " .. tostring(body.Position.Y))
 		state:SetAttribute("RoundState", "Lobby")
 	end,
+
+	["walk speed (10) is ignored and sprint-ish speed (16) is heard"] = function()
+		assert(Monster.isHeard(10) == false, "a target moving at 10 studs/s should be ignored")
+		assert(Monster.isHeard(16) == true, "a target moving at 16 studs/s should be heard")
+	end,
 }

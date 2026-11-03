@@ -15,7 +15,7 @@ local Monster = {}
 local SIZE = 6
 local HEARING_RANGE = 150
 local SPRINT_SPEED = 14 -- horizontal speed above this counts as sprinting (heard first)
-local HEARD_SPEED = 8 -- slower than this is sneaking: the monster can't hear it
+local HEARD_SPEED = 12 -- walk speed is 10: at or below walk speed the monster can't hear you
 local QUIET_NOISE = 0.05 -- below this the monster drifts to the last heard spot
 local BASE_SPEED = 4
 local NOISE_SPEED = 14
@@ -147,7 +147,11 @@ local function sampleSpeeds()
 end
 
 -- Loudest alive player within range: sprinters beat walkers, then fastest wins.
--- Sneakers (below HEARD_SPEED) are silent.
+-- Anyone at or below walk speed (under HEARD_SPEED) is silent.
+local function isHeard(speed: number): boolean
+	return speed >= HEARD_SPEED
+end
+
 local function findLoudest(from: Vector3): Vector3?
 	local bestPos: Vector3? = nil
 	local bestScore = -math.huge
@@ -157,7 +161,7 @@ local function findLoudest(from: Vector3): Vector3?
 		end
 		local speed = sample.speed
 		local distance = (sample.position - from).Magnitude
-		if speed >= HEARD_SPEED and distance <= HEARING_RANGE then
+		if isHeard(speed) and distance <= HEARING_RANGE then
 			local score = speed + (if speed > SPRINT_SPEED then 1000 else 0)
 			if score > bestScore then
 				bestScore = score
@@ -263,6 +267,10 @@ local function run(hall: Instance)
 
 	state:GetAttributeChangedSignal("RoundState"):Connect(onRoundState)
 	onRoundState()
+end
+
+function Monster.isHeard(speed: number): boolean
+	return isHeard(speed)
 end
 
 function Monster.start()
