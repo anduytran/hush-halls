@@ -5,15 +5,18 @@
 -- A product's receipt is reserved in a DataStore before its handler runs and marked done after,
 -- so a purchase Roblox retries is never given twice.
 -- Sprint-8 fix: each attempt writes a "pending" marker with its own token, and only that attempt ever replaces
--- it (with "done" or "released"). There is no stale-marker takeover any more, so two grants can never overlap.
+-- it (with "done" or "released"). Sprint-9 fix: the one exception is a marker over a day old (see below).
 -- The handler runs in its own task. While it runs, the receipt answers NotProcessedYet. When it finishes, even
 -- late, its result is written over its own marker, retrying with backoff until the write succeeds:
 --   true          -> "done": Roblox's retry gets PurchaseGranted and nothing more is given
 --   false / error -> "released": Roblox's retry can try the grant again
 -- Handlers SHOULD NOT YIELD (no task.wait, no Async calls, no WaitForChild): give the product and return.
 -- Why: a yielding handler is never cancelled (that could leave a half-done grant), so the player waits for
--- it, and if the server shuts down while it's yielding, its marker is never replaced. With no takeover, that
--- purchase then answers NotProcessedYet on every retry and is never given.
+-- it, and if the server shuts down while it's yielding, its marker is never replaced. Then that
+-- purchase then answers NotProcessedYet on every retry until the marker goes stale (Sprint-9 fix).
+-- Sprint-9 fix: a pending marker older than STALE_PENDING (a day) counts as released, so a purchase left
+-- pending by a server that died is retried the next day instead of being stuck for good. Late writes give up
+-- after MAX_RETRIES attempts, and on shutdown the server waits (up to SHUTDOWN_WAIT) for writes still running.
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
@@ -27,6 +30,22 @@ local Monetization = {}
 -- retries after this many seconds, doubling each time up to RETRY_MAX.
 local RETRY_FIRST = 0.5
 local RETRY_MAX = 30
+-- Sprint-9 fix: a pending marker this old (seconds) is treated like "released" and can be reserved again.
+local STALE_PENDING = 24 * 3600
+-- Sprint-9 fix: keepWriting gives up (with a warn) after this many UpdateAsync attempts.
+local MAX_RETRIES = 10
+-- Sprint-9 fix: on shutdown, wait at most this many seconds for in-flight writes and late grants.
+local SHUTDOWN_WAIT = 25
+
+-- Sprint-9 fix: the clock and wait used for markers and retries. Specs swap these for a fake clock.
+local clock = {
+	now = function(): number
+		return os.time()
+	end,
+	wait = function(seconds: number)
+		task.wait(seconds)
+	end,
+}
 
 type PassHandler = (player: Player) -> ()
 type ProductHandler = (player: Player) -> boolean
@@ -38,6 +57,8 @@ local owned: { [Player]: { [string]: boolean } } = {}
 local history: DataStore? = nil
 -- Receipts being handled right now, so a duplicate ProcessReceipt call can't grant twice.
 local processing: { [string]: boolean } = {}
+-- Sprint-9 fix: background writes and late grants still running, so BindToClose can wait for them.
+local inFlight = 0
 
 local function getHistory(): DataStore?
 	if history then
@@ -134,10 +155,14 @@ local function isDone(value: any): boolean
 	return value == true or (type(value) == "table" and value.status == "done")
 end
 
--- Sprint-8 fix: any pending marker means another attempt owns the receipt, however old it is. Only that
--- attempt replaces it, so there's no age check and no takeover.
+-- Sprint-8 fix: a pending marker means another attempt owns the receipt. Only that attempt replaces it.
+-- Sprint-9 fix: unless it's older than STALE_PENDING (or has no time at all): then it counts as released.
+-- The old attempt's late write only lands over its own token, so it can't clobber the new attempt's marker.
 local function isPending(value: any): boolean
-	return type(value) == "table" and value.status == "pending"
+	if type(value) ~= "table" or value.status ~= "pending" then
+		return false
+	end
+	return type(value.at) == "number" and clock.now() - value.at <= STALE_PENDING
 end
 
 local function isOurs(value: any, token: string): boolean
@@ -160,22 +185,50 @@ local function writeOverOurs(store: DataStore, receiptKey: string, token: string
 	return ok, if ok then wasOurs else err
 end
 
--- Sprint-8 fix: writes `final` over our own marker, retrying with task.wait backoff until the write succeeds.
+-- Sprint-8 fix: writes `final` over our own marker, retrying with backoff until the write succeeds.
 -- Yields, so it runs from the handler's task or a task of its own, never on ProcessReceipt's own path.
+-- Sprint-9 fix: gives up with a warn after MAX_RETRIES attempts, and counts as in flight while it runs.
 local function keepWriting(store: DataStore, receiptKey: string, token: string, final: any, purchaseId: string)
+	inFlight += 1
 	local delay = RETRY_FIRST
-	while true do
+	for attempt = 1, MAX_RETRIES do
 		local ok, wasOurs = writeOverOurs(store, receiptKey, token, final)
 		if ok then
 			if not wasOurs then
 				warn(`[Monetization] purchase {purchaseId} doesn't hold our marker; wrote nothing`)
 			end
-			return
+			break
+		end
+		if attempt == MAX_RETRIES then
+			warn(
+				`[Monetization] gave up recording purchase {purchaseId} as {final.status} after {MAX_RETRIES}`
+					.. ` attempts: {wasOurs}`
+			)
+			break
 		end
 		warn(`[Monetization] couldn't record purchase {purchaseId} as {final.status}, retrying in {delay} s: {wasOurs}`)
-		task.wait(delay)
+		clock.wait(delay)
 		delay = math.min(delay * 2, RETRY_MAX)
 	end
+	inFlight -= 1
+end
+
+-- Sprint-9 fix: after a failed reserve, wait RETRY_FIRST, read the receipt back, and release it only if it holds
+-- our token (the reserve's write landed before the error). If the read fails too, release anyway: keepWriting
+-- only ever writes over our own token, so that can't touch another attempt's marker.
+local function releaseIfOurs(store: DataStore, receiptKey: string, token: string, final: any, purchaseId: string)
+	inFlight += 1
+	clock.wait(RETRY_FIRST)
+	local ok, value = pcall(function()
+		return store:GetAsync(receiptKey)
+	end)
+	if not ok then
+		warn(`[Monetization] couldn't read purchase {purchaseId} after a failed reserve: {value}`)
+	end
+	if not ok or isOurs(value, token) then
+		keepWriting(store, receiptKey, token, final, purchaseId)
+	end
+	inFlight -= 1
 end
 
 -- Sprint-8 fix: runs the grant in its own task (task.spawn) and never cancels it. Returns (true, ok, given) if
@@ -190,13 +243,18 @@ local function runGrant(
 	local finished = false
 	local resultOk, resultGiven = false, nil
 	task.spawn(function()
+		inFlight += 1 -- Sprint-9 fix: a yielding grant counts as in flight until its result is written
 		local ok, given = pcall(grant, buyer)
 		finished = true
 		if waiting then
 			resultOk, resultGiven = ok, given
 		else
-			onLate(ok, given)
+			local lateOk, lateErr = pcall(onLate, ok, given)
+			if not lateOk then
+				warn(`[Monetization] couldn't record a late grant: {lateErr}`)
+			end
 		end
+		inFlight -= 1
 	end)
 	waiting = false
 	if finished then
@@ -216,7 +274,7 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	local purchaseId = receipt.PurchaseId
 	local token = HttpService:GenerateGUID(false)
 	local function marker(status: string)
-		return { status = status, at = os.time(), token = token }
+		return { status = status, at = clock.now(), token = token }
 	end
 	local status: "done" | "busy" | "reserved" = "busy"
 	local reserveOk, reserveResult = pcall(function()
@@ -227,7 +285,7 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 				return nil
 			end
 			if isPending(value) then
-				status = "busy" -- another attempt owns it (its grant may still be running)
+				status = "busy" -- another attempt owns it (its grant may still be running); stale ones fall through
 				return nil
 			end
 			status = "reserved"
@@ -237,8 +295,9 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	if not reserveOk then
 		warn(`[Monetization] couldn't reserve purchase {purchaseId}: {reserveResult}`)
 		-- Sprint-8 fix: the write may have landed before the error. Nothing was granted, so release our marker
-		-- if it's there: with no takeover, it would otherwise block the purchase for good.
-		task.spawn(keepWriting, store, receiptKey, token, marker("released"), purchaseId)
+		-- if it's there: it would otherwise block the purchase until it goes stale.
+		-- Sprint-9 fix: not blindly: wait, read it back, and release only if it holds our token.
+		task.spawn(releaseIfOurs, store, receiptKey, token, marker("released"), purchaseId)
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 	if status == "done" then
@@ -297,10 +356,40 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 
--- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync) and handler, and read the
--- first retry delay.
+-- Sprint-9 fix: waits until no writes or late grants are in flight, or `timeout` seconds have passed.
+-- Returns true if everything finished.
+local function drain(timeout: number): boolean
+	local waited = 0
+	while inFlight > 0 and waited < timeout do
+		clock.wait(0.1)
+		waited += 0.1
+	end
+	return inFlight == 0
+end
+
+-- Sprint-9 fix: on shutdown, give background writes up to SHUTDOWN_WAIT seconds to land.
+game:BindToClose(function()
+	if not drain(SHUTDOWN_WAIT) then
+		warn(`[Monetization] shutting down with {inFlight} purchase write(s) still running`)
+	end
+end)
+
+-- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync, GetAsync) and handler, and read
+-- the first retry delay.
 Monetization._processReceipt = processReceipt
 Monetization._RETRY_FIRST = RETRY_FIRST
+-- Sprint-9 fix: specs replace `_test.clock.now` and `_test.clock.wait` with a fake clock, so they never really
+-- wait, and read the limits and in-flight count.
+Monetization._test = {
+	clock = clock,
+	STALE_PENDING = STALE_PENDING,
+	MAX_RETRIES = MAX_RETRIES,
+	SHUTDOWN_WAIT = SHUTDOWN_WAIT,
+	drain = drain,
+	inFlight = function(): number
+		return inFlight
+	end,
+}
 
 MarketplaceService.ProcessReceipt = function(receipt)
 	local key = keyFor(Products.Products, receipt.ProductId)
