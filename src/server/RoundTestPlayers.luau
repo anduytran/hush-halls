@@ -39,6 +39,17 @@ local fakes: { [FakePlayer]: Folder } = {}
 -- (stop() disconnects it). Only called while that connection is connected.
 local joined: { connection: RBXScriptConnection, onAdded: (Player) -> (), onRemoving: (Player) -> () }? = nil
 local exitHandler: { connection: RBXScriptConnection, onTouched: (BasePart) -> () }? = nil
+-- Sprint 23: how many more LoadCharacter calls error for each stand-in, and which stand-ins' LoadCharacter is held
+-- (it yields until released or the stand-in is removed).
+local failsLeft: { [FakePlayer]: number } = {}
+local held: { [FakePlayer]: boolean } = {}
+-- Sprint 23: set by _test.pretendLiveServer, so a Studio spec can check that attach() refuses outside Studio. It can
+-- only make the check stricter: a server that isn't Studio is refused whatever this is.
+local pretendLive = false
+
+local function inStudio(): boolean
+	return RunService:IsStudio() and not pretendLive
+end
 
 -- RoundService is typed on Player. A stand-in only gets read through the FakePlayer members above, so it is
 -- handed over as a Player here, in this one place.
@@ -81,7 +92,7 @@ local source: PlayerSource = {
 -- Studio only (errors elsewhere). Wires the stand-ins into this RoundService. Call it while the service is
 -- stopped: start() connects through the source it finds. Calling it again just re-wires.
 function RoundTestPlayers.attach(roundService: RoundServiceTest)
-	if not RunService:IsStudio() then
+	if not inStudio() then
 		error("RoundTestPlayers only works in Studio", 2)
 	end
 	attached = roundService
@@ -100,7 +111,7 @@ end
 
 -- Adds a stand-in that joins as PlayerAdded would (if start() has run) and gets a character at once, as Roblox's
 -- auto-spawn would. It starts with leaderstats.Coins = 0. Its character is an anchored HumanoidRootPart and a
--- Humanoid; LoadCharacter replaces it. Errors unless attach() has run.
+-- Humanoid; LoadCharacter replaces it (see failLoadCharacter and holdLoadCharacter). Errors unless attach() has run.
 function RoundTestPlayers.add(name: string): FakePlayer
 	if not attached then
 		error("RoundTestPlayers.add: call attach() first", 2)
@@ -134,6 +145,18 @@ function RoundTestPlayers.add(name: string): FakePlayer
 			return folder:FindFirstChild(childName)
 		end,
 		LoadCharacter = function(self)
+			local fails = failsLeft[self]
+			if fails then
+				failsLeft[self] = if fails > 1 then fails - 1 else nil
+				error(`LoadCharacter failed for {name} (test)`)
+			end
+			-- A held load keeps the old character until it is released; a stand-in removed meanwhile gets none.
+			while held[self] and fakes[self] do
+				RunService.Heartbeat:Wait()
+			end
+			if not fakes[self] then
+				return
+			end
 			if self.Character then
 				self.Character:Destroy()
 			end
@@ -166,6 +189,8 @@ end
 function RoundTestPlayers.removeAll()
 	for fake, folder in fakes do
 		fakes[fake] = nil
+		failsLeft[fake] = nil
+		held[fake] = nil
 		if joined and joined.connection.Connected then
 			joined.onRemoving(asPlayer(fake))
 		end
@@ -187,5 +212,35 @@ function RoundTestPlayers.touchExit(hit: BasePart): boolean
 	exitHandler.onTouched(hit)
 	return true
 end
+
+-- Sprint 23: the stand-in's next `times` LoadCharacter calls error (as a real one can, e.g. while the player leaves),
+-- leaving its character as it was. 0 turns it off.
+function RoundTestPlayers.failLoadCharacter(fake: FakePlayer, times: number)
+	failsLeft[fake] = if times > 0 then times else nil
+end
+
+-- Sprint 23: while held, the stand-in's LoadCharacter yields (keeping its old character), as a slow spawn would.
+-- Releasing it lets any waiting load finish and make the new character.
+function RoundTestPlayers.holdLoadCharacter(fake: FakePlayer, hold: boolean)
+	held[fake] = if hold then true else nil
+end
+
+-- Sprint 23: kills the stand-in's character (Humanoid.Health = 0), as the monster would. False if it has none.
+function RoundTestPlayers.kill(fake: FakePlayer): boolean
+	local character = fake.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return false
+	end
+	humanoid.Health = 0
+	return true
+end
+
+RoundTestPlayers._test = {
+	-- Sprint 23: while on, attach() acts as on a live server and refuses. It can't make a live server pass.
+	pretendLiveServer = function(on: boolean)
+		pretendLive = on
+	end,
+}
 
 return RoundTestPlayers

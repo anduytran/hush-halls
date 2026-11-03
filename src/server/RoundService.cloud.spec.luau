@@ -56,6 +56,7 @@ local function resetState()
 	RoundService._test.failStep(nil)
 	RoundService._test.resetDurations()
 	RoundService.stop()
+	RoundTestPlayers._test.pretendLiveServer(false)
 	RoundTestPlayers.detach()
 	state:SetAttribute("RoundState", nil)
 	state:SetAttribute("TimeLeft", nil)
@@ -198,6 +199,22 @@ local function withoutRoundServiceLogs(body: () -> ())
 		error(err, 0)
 	end
 	assert(#messages == 0, `RoundService printed {#messages} warning(s)/error(s): {table.concat(messages, " | ")}`)
+end
+
+-- Sprint 23: for tests that expect RoundService to warn. Collects this instance's warnings while body runs and
+-- returns them, instead of letting them fail the test; a warning after body returns still fails it, and so do errors.
+local function collectWarnings(body: () -> ()): { string }
+	local warnings: { string } = {}
+	local previousOnWarn = RoundService._test.onWarn
+	RoundService._test.onWarn = function(message: string)
+		table.insert(warnings, message)
+	end
+	local ok, err = pcall(body)
+	RoundService._test.onWarn = previousOnWarn
+	if not ok then
+		error(err, 0)
+	end
+	return warnings
 end
 
 -- Waits (sampling each frame) until RoundState is the given state, or errors after timeout seconds.
@@ -796,6 +813,153 @@ local tests = {
 			Vector3.new(offset.X, 0, offset.Z).Magnitude <= 3 and math.abs(offset.Y - 4) < 0.5,
 			`the joiner should be spawned at Start for the next round, was {offset} off`
 		)
+	end,
+
+	-- Sprint 23: one fake's LoadCharacter errors once at the round spawn. RoundService reports exactly one warning
+	-- (through _test.onWarn) and no error, the round still starts for the others, and its retry spawns the fake.
+	["LoadCharacter failing for one player warns once and the round still starts"] = function()
+		if fakeRoundSkipped("LoadCharacter failure") then
+			return
+		end
+		RoundService._test.setDurations(1, 2, 1)
+		local failing = RoundTestPlayers.add("SpecLoadFails")
+		local other = RoundTestPlayers.add("SpecOther")
+		RoundTestPlayers.failLoadCharacter(failing, 1)
+		RoundService.start()
+
+		local warnings = collectWarnings(function()
+			waitForState("Running", 15)
+		end)
+		assert(#warnings == 1, `expected exactly 1 warning, got {#warnings}: {table.concat(warnings, " | ")}`)
+		assert(
+			string.find(warnings[1], failing.Name, 1, true),
+			`the warning should name {failing.Name}, got: {warnings[1]}`
+		)
+		assert(other:GetAttribute("InRound") == true, "the other player should be InRound when Running begins")
+		assert(failing:GetAttribute("InRound") == true, "the retried LoadCharacter should have spawned the player")
+		waitForState("Ended", 15)
+	end,
+
+	-- Sprint 23: one fake's spawn outlasts the 10s spawn wait. Running begins anyway, the stuck fake is dropped from
+	-- the round and watches from the platform; when its spawn finally finishes it stays a spectator (never InRound,
+	-- never at Start) while the other fake plays the round out. Exactly one warning (the timeout) is reported.
+	["a player whose spawn times out spectates and the round continues"] = function()
+		if fakeRoundSkipped("spawn timeout") then
+			return
+		end
+		RoundService._test.setDurations(1, 5, 1)
+		local stuck = RoundTestPlayers.add("SpecStuck")
+		local stayer = RoundTestPlayers.add("SpecStayer")
+		RoundTestPlayers.holdLoadCharacter(stuck, true)
+		local oldCharacter = stuck.Character
+		RoundService.start()
+
+		local badSets: { string } = {}
+		local connection = stuck:GetAttributeChangedSignal("InRound"):Connect(function()
+			if stuck:GetAttribute("InRound") == true then
+				table.insert(
+					badSets,
+					`{tostring(state:GetAttribute("RoundState"))} {tostring(state:GetAttribute("TimeLeft"))}`
+				)
+			end
+		end)
+		local ok, err = pcall(function()
+			local warnings = collectWarnings(function()
+				waitForState("Running", 20)
+			end)
+			assert(#warnings == 1, `expected exactly 1 warning, got {#warnings}: {table.concat(warnings, " | ")}`)
+			assert(
+				string.find(warnings[1], stuck.Name, 1, true),
+				`the warning should name {stuck.Name}, got: {warnings[1]}`
+			)
+			assert(stayer:GetAttribute("InRound") == true, "the other player should be InRound when Running begins")
+			assert(stuck:GetAttribute("InRound") ~= true, "the timed-out player must not be InRound")
+			local platform = RoundService._test.platform()
+			assert(platform, "start() should have made Hall.LobbyPlatform")
+			assertOnPlatform(stuck, platform)
+
+			-- The slow spawn finishes mid-round: the new character must go to the platform, not Start.
+			RoundTestPlayers.holdLoadCharacter(stuck, false)
+			waitUntil("the late character to reach the platform", 5, function()
+				return stuck.Character ~= nil and stuck.Character ~= oldCharacter and (onPlatform(stuck, platform))
+			end)
+			assert(state:GetAttribute("RoundState") == "Running", "Running ended before the late spawn finished")
+			-- A frame later the finished spawn must still not have moved them or set InRound.
+			RunService.Heartbeat:Wait()
+			assertOnPlatform(stuck, platform)
+
+			waitForState("Ended", 15, function()
+				assert(stayer:GetAttribute("InRound") == true, "the stayer should stay InRound all through Running")
+			end)
+			waitForState("Lobby", 15)
+		end)
+		connection:Disconnect()
+		if not ok then
+			error(err, 0)
+		end
+		assert(#badSets == 0, `the timed-out player was set InRound during: {table.concat(badSets, ", ")}`)
+	end,
+
+	-- Sprint 23: a fake dies mid-round (Health = 0). Its InRound clears and stays clear, the other fake stays InRound,
+	-- and the round ends normally: Running counts down to its last second, then Ended and the next Lobby.
+	["a player who dies mid-round leaves InRound and the round ends normally"] = function()
+		if fakeRoundSkipped("mid-round death") then
+			return
+		end
+		RoundService._test.setDurations(1, 3, 1)
+		local victim = RoundTestPlayers.add("SpecVictim")
+		local stayer = RoundTestPlayers.add("SpecStayer")
+		RoundService.start()
+
+		waitForState("Running", 15)
+		assert(victim:GetAttribute("InRound") == true, "the victim should be InRound when Running begins")
+		assert(RoundTestPlayers.kill(victim), "the victim should have a character to kill")
+		waitUntil("the dead player's InRound to clear", 5, function()
+			return victim:GetAttribute("InRound") == false
+		end)
+		assert(state:GetAttribute("RoundState") == "Running", "Running ended before the death was handled")
+
+		local lowestRunningTime = math.huge
+		waitForState("Ended", 15, function()
+			assert(victim:GetAttribute("InRound") == false, "the dead player must not be InRound again this round")
+			assert(stayer:GetAttribute("InRound") == true, "the stayer should stay InRound all through Running")
+			local timeLeft = state:GetAttribute("TimeLeft")
+			if state:GetAttribute("RoundState") == "Running" and type(timeLeft) == "number" then
+				lowestRunningTime = math.min(lowestRunningTime, timeLeft)
+			end
+		end)
+		assert(lowestRunningTime <= 1, `Running should run out its clock, lowest TimeLeft {lowestRunningTime}`)
+		waitForState("Lobby", 15, function()
+			for _, player in { victim, stayer } do
+				assert(player:GetAttribute("InRound") == false, `{player.Name} should not be InRound in Ended`)
+			end
+		end)
+		assert(victim:GetAttribute("Escaped") ~= true, "dying must not count as escaping")
+	end,
+
+	-- Sprint 23: RoundTestPlayers.attach refuses when RunService:IsStudio() is false. In Studio this uses
+	-- _test.pretendLiveServer, which can only make the check stricter. A refused attach leaves RoundService on the
+	-- Players service, and add() still refuses.
+	["RoundTestPlayers refuses to attach outside Studio"] = function()
+		RoundService.stop()
+		RoundTestPlayers.detach()
+		local inStudio = RunService:IsStudio()
+		if inStudio then
+			RoundTestPlayers._test.pretendLiveServer(true)
+		end
+		local ok = pcall(RoundTestPlayers.attach, RoundService)
+		local addOk = pcall(RoundTestPlayers.add, "SpecIntruder")
+		RoundTestPlayers._test.pretendLiveServer(false)
+		assert(not ok, "attach() should error when the server isn't Studio")
+		assert(not addOk, "add() should refuse after a refused attach()")
+		assert(RoundService._test.usingDefaultSource(), "a refused attach() must not swap RoundService's player source")
+		if inStudio then
+			-- The pretend flag is off again, so a Studio attach works, and detach puts the Players service back.
+			RoundTestPlayers.attach(RoundService)
+			assert(not RoundService._test.usingDefaultSource(), "attach() in Studio should swap the player source")
+			RoundTestPlayers.detach()
+			assert(RoundService._test.usingDefaultSource(), "detach() should restore the Players service")
+		end
 	end,
 }
 

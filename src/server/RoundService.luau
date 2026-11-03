@@ -301,7 +301,8 @@ function RoundService.start()
 	step("the round loop", function()
 		local function spawnAtStart(player: Player, thisRound: number)
 			local character = loadCharacter(player)
-			if round ~= thisRound or player.Parent ~= Players then
+			-- Sprint 23: a player whose spawn outlasted the spawn wait was dropped from the round; they spectate.
+			if round ~= thisRound or player.Parent ~= Players or not participants[player] then
 				return
 			end
 			if not character then
@@ -346,21 +347,31 @@ function RoundService.start()
 					player:SetAttribute("Escaped", false)
 				end
 				spawning = true
-				local pending = 0
+				local pending: { [Player]: boolean } = {}
 				for player in participants do
-					pending += 1
+					pending[player] = true
 					task.spawn(function()
 						local ok, err = pcall(spawnAtStart, player, thisRound)
 						if not ok then
 							report(`[RoundService] couldn't spawn {player.Name}: {err}`)
 							participants[player] = nil
 						end
-						pending -= 1
+						pending[player] = nil
 					end)
 				end
 				local spawnDeadline = os.clock() + SPAWN_TIMEOUT
-				while pending > 0 and os.clock() < spawnDeadline do
+				while next(pending) ~= nil and os.clock() < spawnDeadline do
 					task.wait(0.1)
+				end
+				-- Sprint 23 fix: anyone still spawning at the deadline is dropped from the round, so they can't hold
+				-- it open or be put at Start mid-round when their spawn finishes. They spectate like a late joiner.
+				for player in pending do
+					participants[player] = nil
+					if player.Parent == Players then
+						report(
+							`[RoundService] spawning {player.Name} took over {SPAWN_TIMEOUT}s; they spectate this round`
+						)
+					end
 				end
 				spawning = false
 				-- Anyone who joined during the spawn wait and already has a body goes to the platform too.
