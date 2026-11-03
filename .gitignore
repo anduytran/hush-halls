@@ -1,0 +1,10 @@
+Packages/
+ServerPackages/
+DevPackages/
+*.rbxl
+*.rbxlx
+*.rbxl.lock
+sourcemap.json
+hangar-check.rbxl
+.env
+node_modules/
