@@ -1,5 +1,5 @@
 ---
-status: in-progress   # round-scoped + server-side hearing in sprint 2; averaged SpeedSampler in sprint 3, not playtested
+status: in-progress   # round-scoped + server-side hearing in sprint 2; averaged SpeedSampler in sprint 3; repeating hall-wait warning in sprint 4, not playtested
 tags: [design, mechanic]
 ---
 # Blind monster

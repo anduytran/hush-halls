@@ -26,8 +26,16 @@ Sprint 3 (2026-11-03): six reviewer follow-ups on the round loop fixed (merged; 
 - [x] `main.server.luau`: requiring and building the hall are both in the pcall, so a broken HallBuilder only warns.
 - [x] `RoundService.cloud.spec.luau`: each test starts from fresh round state.
 
+Sprint 4 (2026-11-03): reviewer follow-ups (merged; checks pass, not run in a live round).
+- [x] Receipts: `UpdateAsync` only reserves a pending marker; the grant runs outside it, then a second `UpdateAsync` marks it done. Failed grant drops the marker (NotProcessedYet). Stale pending markers (over 120 s) are taken over. New `Monetization.cloud.spec.luau` with a fake store.
+- [x] `main.server.luau`: a system whose `start()` errors is retried every 5 s, up to 5 times.
+- [x] Monster warns every 30 s while it waits for the hall, instead of once.
+- [x] `RoundService.stop()` does nothing unless started (test-only).
+- [x] SpeedSampler: a single step over 40 studs is kept but capped at sprint speed, so there's no silent gap.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–3.
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–4.
+- Run `Monetization.cloud.spec.luau` (sprint 4 receipt flow).
 - Run `SpeedSampler.spec.luau`; check that walkers stay quiet and sprinters are heard.
 - Full round end to end: spectators on the platform, InRound cleared on death/escape/Ended, monster parks between rounds.
 - Run the two `.cloud.spec.luau` files.

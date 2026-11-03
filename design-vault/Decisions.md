@@ -2,6 +2,12 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 4: reviewer follow-ups
+- **Receipt grants run outside `UpdateAsync`.** UpdateAsync can re-run its callback, which could grant twice, and grant handlers may yield. Now: reserve (pending) → grant → mark done. This replaces sprint 3's single-UpdateAsync flow.
+- **Stale pending markers (over 120 s) are taken over.** This is safe only while Coins aren't saved; revisit if purchases ever persist.
+- **Failed system starts are retried** (5 s apart, 5 tries) instead of being given up after one warning.
+- **Teleport-sized steps are capped at sprint speed, not dropped.** Dropping them left a silent gap.
+
 ## 2026-11-03 — Sprint 3: reviewer follow-ups
 - **One shared `SpeedSampler` for Monster and NoiseService.** It averages speed over about 0.5 s and skips samples under 0.1 s apart. The alternative was each system keeping its own deltas, which could disagree and read walkers as sprinting.
 - **Teleport filter is per step (over 40 studs), not per speed (over 60 studs/s).** The old rule zeroed real sprinters.
