@@ -47,9 +47,17 @@ Sprint 6 (2026-11-03): five sprint-5 reviewer follow-ups (merged; scripter repor
 - [x] `RoundService.cloud.spec.luau`: every test starts from fresh state and cleans up after itself.
 - [x] Specs updated for all three files.
 
+Sprint 7 (2026-11-03): six sprint-6 reviewer follow-ups (merged; scripter reports checks pass, not run in a live round).
+- [x] Receipts: a grant handler that yields is no longer stopped (replaces sprint 6's cancel). The receipt answers NotProcessedYet and keeps its pending marker; if the handler later returns true it is marked done. Stale-takeover window lowered from 600 s to 180 s.
+- [x] SpeedSampler: a step over 40 studs is dropped. The sample keeps the previous average and the baseline moves to the new spot (replaces sprint 6's clamp to sprint speed).
+- [x] `RoundService.start()`: no test-only branch; the `_test.beforeStep` hook does the forced failures. `onPlayerAdded` and `spawnAtStart` now sit inside their steps' pcall and rollback.
+- [x] `RoundService.cloud.spec.luau`: skips itself during a live round, and detaches/restores the real lobby platform instead of destroying it.
+- [x] Specs updated for all three files.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–6.
-- Run `Monetization.cloud.spec.luau` (sprint 6: yielding handler fails, 600 s takeover).
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–7.
+- Run `Monetization.cloud.spec.luau` (sprint 7: yielding handler isn't stopped and is marked done later, 180 s takeover).
+- Run `SpeedSampler.spec.luau` (sprint 7: teleports hold the previous reading).
 - Run `RoundService.cloud.spec.luau`: forced failure in each start step rolls back cleanly.
 - Check a failed RoundService start retries cleanly and a started system isn't restarted.
 - Run `SpeedSampler.spec.luau`; check that walkers stay quiet and sprinters are heard.

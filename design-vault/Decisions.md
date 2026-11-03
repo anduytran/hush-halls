@@ -2,6 +2,12 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 7: reviewer follow-ups
+- **A yielding grant handler is not cancelled.** Cancelling could double-grant or leave half-done effects. The receipt answers NotProcessedYet and keeps its marker; a late success is marked done. Handlers still must not yield. Replaces sprint 6's cancel.
+- **Stale-takeover window lowered to 180 s** (from 600 s), so a purchase whose server died is retried sooner.
+- **Teleport-sized steps are dropped and hold the previous reading.** Reviewer rule: a long step must read neither as a sprint nor as 0. Replaces sprint 6's clamp.
+- **No test-only branch in `RoundService.start()`**; tests force failures through the `_test.beforeStep` hook.
+
 ## 2026-11-03 — Sprint 6: reviewer follow-ups
 - **Grant handlers must not yield.** The grant runs synchronously right after the token check; a handler that yields is stopped and counts as failed. This closes sprint 5's accepted double-grant gap.
 - **Stale-takeover window raised to 600 s** (from 120 s). A live attempt now only holds the marker across two DataStore calls, so a wide margin costs little.
