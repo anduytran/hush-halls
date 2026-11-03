@@ -3,22 +3,21 @@ tags: [design]
 ---
 # Game Overview
 
-> Fill this in (or ask the Lead to draft it from the existing game). Agents design new work to fit it.
-
 ## Pitch
-One or two sentences: what the player does and why it's fun.
+Run through flooding halls to the exit while a blind monster hunts you by sound. Every footstep raises the water; sneak and you're slow, sprint and you're loud. Phone-first runner, rounds of about two minutes.
 
 ## Core loop
-1. 
-2. 
-3. 
+1. Round starts: everyone spawns at the hall entrance; water is low, the monster is far away.
+2. Run or sneak toward the exit. Sprinting makes noise: the water rises and the monster closes in on the loudest player.
+3. Reach the exit (win, earn coins) or get caught / drown (out). Short lobby, then the next round.
 
 ## Pillars
-What every feature should support (and what to say no to).
-- 
+- **Noise is the price of speed.** Every advantage costs sound; nothing is free.
+- **Readable panic.** Water line, noise meter and monster are always visible or audible at a glance.
+- **One thumb.** Everything playable on a phone with move + hold-to-sprint.
 
 ## Players and platforms
-Who it's for, session length, phone vs desktop vs console share.
+Casual 9–16, phone/tablet first, PC second. Sessions of 10–15 minutes (5–7 rounds).
 
 ## Monetisation
-Game passes, developer products, and what must never be pay-to-win.
+Cosmetics (trails) and VIP (2x coins, name tag). Never quieter footsteps or a slower monster for money.
