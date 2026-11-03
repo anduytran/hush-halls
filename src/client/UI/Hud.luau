@@ -141,9 +141,12 @@ function Hud.mount()
 	-- Only the HUD that bound the global HushSprint action may unbind it
 	local boundSprint = false
 	local candidate = { bind = function() end }
+	-- Set once sprint is built below: lets go of anything still held so the server isn't left sprinting
+	local releaseHeld = function() end
 	connections[1] = top:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeGoal)
 	local function disconnectAll()
 		alive = false
+		releaseHeld()
 		for _, connection in connections do
 			connection:Disconnect()
 		end
@@ -364,9 +367,21 @@ function Hud.mount()
 			sprintRemote:FireServer(isHeld)
 		end
 	end
+	releaseHeld = function()
+		table.clear(held)
+		setSprint("Button", false)
+	end
 
 	-- Track the press globally so sliding a finger off the button still counts as a release
 	local pressInput: InputObject? = nil
+	local function buttonDown(input: InputObject?)
+		pressInput = input
+		setSprint("Button", true)
+	end
+	local function buttonUp()
+		pressInput = nil
+		setSprint("Button", false)
+	end
 	table.insert(
 		connections,
 		sprintButton.InputBegan:Connect(function(input)
@@ -374,8 +389,7 @@ function Hud.mount()
 				input.UserInputType == Enum.UserInputType.Touch
 				or input.UserInputType == Enum.UserInputType.MouseButton1
 			then
-				pressInput = input
-				setSprint("Button", true)
+				buttonDown(input)
 			end
 		end)
 	)
@@ -386,11 +400,25 @@ function Hud.mount()
 				if input.UserInputType == Enum.UserInputType.Touch and input ~= pressInput then
 					return
 				end
-				pressInput = nil
-				setSprint("Button", false)
+				buttonUp()
 			end
 		end)
 	)
+	-- Studio-only sprint hooks: forceTouch shows/hides the button whatever TouchEnabled says, and
+	-- pressSprint/releaseSprint run the same press/release as a real touch (including the remote fire)
+	local hooks = testHooks[gui]
+	if hooks then
+		hooks.forceTouch = function(on: boolean)
+			sprintButton.Visible = on
+		end
+		hooks.pressSprint = function()
+			buttonDown(nil)
+		end
+		hooks.releaseSprint = buttonUp
+		hooks.isSprinting = function(): boolean
+			return sprinting
+		end
+	end
 
 	-- The action name is global: a second HUD (such as a spec's) must not replace or remove the live binding
 	candidate.bind = function()

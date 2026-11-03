@@ -24,7 +24,7 @@ Always-on round info while sneaking through the hall: how long is left, how high
 - WaterBar: fill = `State.WaterLevel / 20`, clamped 0–1
 - NoiseMeter: fill = `State.Noise` (0–1); green, turns Danger red and caption reads "Noise: LOUD" above 0.6 (text change so it isn't colour-only)
 - Coins: `leaderstats.Coins`, Accent colour
-- SprintButton: hold to sprint. Fires `Remotes.Sprint(true)` on press and `(false)` on release (also when the finger slides off). LeftShift does the same on PC. Shift and the button are tracked apart, so releasing one while holding the other keeps sprinting.
+- SprintButton: hold to sprint. Fires `Remotes.Sprint(true)` on press and `(false)` on release (also when the finger slides off). LeftShift does the same on PC. Shift and the button are tracked apart, so releasing one while holding the other keeps sprinting. If the HUD is destroyed while sprint is held, it sends `Sprint(false)` once so the server isn't left sprinting.
 
 ## States
 - Before State/Remotes/leaderstats exist: placeholders, waits silently (no infinite-yield warning)
@@ -37,6 +37,7 @@ Always-on round info while sneaking through the hall: how long is left, how high
 - Sizing: Scale sizes + UISizeConstraint/UITextSizeConstraint (min text 14), ScreenInsets = CoreUISafeInsets
 - Cleanup: every State/player/input connection sits in one table and is disconnected (and `HushSprint` unbound) when the Hud gui is destroyed or the local player leaves
 - Tests: `src/client/UI/Hud.cloud.spec.luau` (client play-test). It drives the goal line through the Studio-only `Hud._test.hooks(gui).setGoal(roundState, escaped)` and never writes replicated State; it also checks the layout in a simulated 375x667 viewport
+- Sprint test hooks (same table, Studio only): `forceTouch(on)` shows or hides SprintButton whatever `TouchEnabled` says; `pressSprint()` / `releaseSprint()` run the same press/release code as a real touch (and fire the remote); `isSprinting()` reads the state. Specs cover: button visible and on screen at 375x667, press sets sprint on and release sets it off, release after Destroy doesn't error, button hidden when not touch
 
 ## Open questions
 - On screens narrower than ~370 px (safe area), RoundInfo/GoalPanel (160 px min) would touch the Coins column; 375 px clears it by ~3 px. Not a target size today.

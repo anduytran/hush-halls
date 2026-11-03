@@ -7,6 +7,7 @@ local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 if not player then
@@ -137,6 +138,22 @@ local function checkPhoneLayout(viewport: Frame, panels: { [string]: GuiObject }
 	end
 end
 
+-- Mounts a throwaway HUD and hands it to body with its test hooks. The HUD is always destroyed afterwards,
+-- and any sprint it still holds is released first, so the server is never left sprinting.
+local function withThrowaway(body: (ScreenGui, any) -> ())
+	local throwaway = Hud.mount()
+	local throwawayHooks = hudTest.hooks(throwaway)
+	assert(throwawayHooks, "Hud._test.hooks(gui) returned nothing for the throwaway HUD")
+	local ok, err = pcall(body, throwaway, throwawayHooks)
+	pcall(throwawayHooks.releaseSprint)
+	if throwaway.Parent then
+		throwaway:Destroy()
+	end
+	if not ok then
+		error(err, 0)
+	end
+end
+
 return {
 	["goal text and colour match every round state"] = function()
 		for _, case in CASES do
@@ -253,5 +270,106 @@ return {
 		b:Destroy()
 		settle(2)
 		assert(ContextActionService:GetAllBoundActionInfo()["HushSprint"] ~= nil, "HushSprint lost")
+	end,
+
+	["forced touch shows the SprintButton fully on a 375x667 phone, clear of other panels"] = function()
+		local liveParent = gui.Parent
+		local viewport, panels, phoneHooks, cleanup = phoneViewport()
+		local ok, err = pcall(function()
+			local button = panels.SprintButton
+			assert(button, "SprintButton missing from the throwaway HUD")
+			phoneHooks.forceTouch(true)
+			settle(2)
+			assert(button.Visible, "SprintButton still hidden after forceTouch(true)")
+			assert(
+				viewport.AbsoluteSize == Vector2.new(375, 667),
+				`phone frame is {viewport.AbsoluteSize}, expected 375x667`
+			)
+			local min, max = rect(button, viewport.AbsolutePosition)
+			assert(
+				min.X >= 0 and min.Y >= 0 and max.X <= 375 and max.Y <= 667,
+				`SprintButton off screen: {min} - {max}`
+			)
+			assert(
+				button.AbsoluteSize.X >= 44 and button.AbsoluteSize.Y >= 44,
+				`SprintButton too small to tap: {button.AbsoluteSize}`
+			)
+			for name, other in panels do
+				if name ~= "SprintButton" and other.Visible then
+					assert(not overlaps(button, other), "SprintButton overlaps " .. name)
+				end
+			end
+		end)
+		cleanup()
+		assert(gui.Parent == liveParent and goalPanel.Parent == gui, "phone test must not move the live HUD")
+		if not ok then
+			error(err, 0)
+		end
+	end,
+
+	["pressSprint and releaseSprint switch the sprint state and button colour"] = function()
+		withThrowaway(function(throwaway, hooks)
+			local button = throwaway:FindFirstChild("SprintButton") :: TextButton
+			assert(button and button:IsA("TextButton"), "SprintButton missing from fresh HUD")
+			assert(not hooks.isSprinting(), "fresh HUD should not be sprinting")
+
+			hooks.pressSprint()
+			assert(hooks.isSprinting() == true, "pressSprint should set sprinting on")
+			assert(
+				button.BackgroundTransparency == 0,
+				`pressed button BackgroundTransparency is {button.BackgroundTransparency}, expected 0`
+			)
+
+			hooks.releaseSprint()
+			assert(hooks.isSprinting() == false, "releaseSprint should set sprinting off")
+			-- Roblox stores transparency as float32, so 0.15 reads back as ~0.1500000059: compare with a tolerance
+			assert(
+				math.abs(button.BackgroundTransparency - 0.15) < 1e-4,
+				`released button BackgroundTransparency is {button.BackgroundTransparency}, expected 0.15`
+			)
+		end)
+	end,
+
+	["destroying a HUD while sprint is held releases it, and releasing afterwards is safe"] = function()
+		local throwaway = Hud.mount()
+		local hooks = hudTest.hooks(throwaway)
+		assert(hooks, "Hud._test.hooks(gui) returned nothing for the throwaway HUD")
+		local ok, err = pcall(function()
+			hooks.pressSprint()
+			assert(hooks.isSprinting() == true, "pressSprint should set sprinting on before destroy")
+			throwaway:Destroy()
+			settle(1)
+			assert(hooks.isSprinting() == false, "still sprinting after the HUD was destroyed while held")
+			local released, releaseErr = pcall(hooks.releaseSprint)
+			assert(released, "releaseSprint after destroy errored: " .. tostring(releaseErr))
+			assert(hooks.isSprinting() == false, "sprinting after releaseSprint following destroy")
+		end)
+		pcall(hooks.releaseSprint)
+		if throwaway.Parent then
+			throwaway:Destroy()
+		end
+		if not ok then
+			error(err, 0)
+		end
+	end,
+
+	["fresh HUD SprintButton visibility matches TouchEnabled (hidden on PC)"] = function()
+		withThrowaway(function(throwaway)
+			local button = throwaway:FindFirstChild("SprintButton") :: TextButton
+			assert(button and button:IsA("TextButton"), "SprintButton missing from fresh HUD")
+			assert(
+				button.Visible == UserInputService.TouchEnabled,
+				`SprintButton.Visible is {button.Visible} but TouchEnabled is {UserInputService.TouchEnabled}`
+			)
+		end)
+	end,
+
+	["live HUD SprintButton visibility matches TouchEnabled"] = function()
+		local liveButton = gui:FindFirstChild("SprintButton") :: TextButton
+		assert(liveButton and liveButton:IsA("TextButton"), "SprintButton missing from the live HUD")
+		assert(
+			liveButton.Visible == UserInputService.TouchEnabled,
+			`live SprintButton.Visible is {liveButton.Visible} but TouchEnabled is {UserInputService.TouchEnabled}`
+		)
 	end,
 }
