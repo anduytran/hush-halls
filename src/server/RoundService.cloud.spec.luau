@@ -10,11 +10,28 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local state = ReplicatedStorage:WaitForChild("State", 10)
 assert(state and state:IsA("Folder"), "ReplicatedStorage.State missing")
 
-local function beforeEach()
+-- Sprint-6 fix: no test depends on what an earlier test left behind. Before each test the service is stopped,
+-- any forced failure is cleared, State is wiped and Hall.LobbyPlatform is removed, so start() makes a new one;
+-- after each test (even a failed one) the service is stopped again.
+local function resetState()
+	RoundService._test.failStep(nil)
 	RoundService.stop()
 	state:SetAttribute("RoundState", nil)
 	state:SetAttribute("TimeLeft", nil)
+	local hall = workspace:FindFirstChild("Hall")
+	local oldPlatform = hall and hall:FindFirstChild("LobbyPlatform")
+	if oldPlatform then
+		oldPlatform:Destroy()
+	end
+end
+
+local function beforeEach()
+	resetState()
 	RoundService.start()
+end
+
+local function afterEach()
+	resetState()
 end
 
 -- A stand-in character, and a stand-in player who isn't in the round (RoundService only reads .Character
@@ -129,20 +146,62 @@ local tests = {
 		task.wait(0.5)
 		local before = RoundService._test.platform()
 		assert(before, "start() should have made Hall.LobbyPlatform")
+		assert(before.Parent and before.Parent.Name == "Hall", "the platform should be in Hall")
 		RoundService.stop()
 		assert(RoundService._test.platform() == nil, "stop() should reset platform to nil")
 		RoundService.start()
 		task.wait(0.5)
 		assert(RoundService._test.platform() == before, "start() should reuse the existing Hall.LobbyPlatform")
 	end,
+
+	["each test starts with a newly made platform"] = function()
+		-- beforeEach removed any platform left over, so this one was made by this test's start().
+		local hall = workspace:FindFirstChild("Hall")
+		assert(hall, "start() should have found or built the Hall")
+		local platforms = 0
+		for _, child in hall:GetChildren() do
+			if child.Name == "LobbyPlatform" then
+				platforms += 1
+			end
+		end
+		assert(platforms == 1, `expected exactly one Hall.LobbyPlatform, found {platforms}`)
+	end,
+
+	-- Sprint-6 fix: start()'s setup runs as small steps, each in its own pcall. Whichever step fails, start()
+	-- errors naming it, and everything set up before it is undone (same rollback as the old single pcall).
+	["a failing setup step rolls back and names the step; a later start() works"] = function()
+		for _, stepName in { "the lobby platform", "player setup", "the exit", "the round loop" } do
+			resetState()
+			RoundService._test.failStep(stepName)
+			local ok, err = pcall(RoundService.start)
+			RoundService._test.failStep(nil)
+			assert(not ok, `start() should error when "{stepName}" fails`)
+			assert(string.find(tostring(err), stepName, 1, true), `the error should name "{stepName}", got {err}`)
+			assert(not RoundService._test.started(), `"{stepName}" failing should clear started`)
+			assert(RoundService._test.connectionCount() == 0, `"{stepName}" failing left connections behind`)
+			assert(RoundService._test.loop() == nil, `"{stepName}" failing left the loop running`)
+			assert(RoundService._test.platform() == nil, `"{stepName}" failing left the platform set`)
+		end
+		-- A retry after a failed start registers each connection once: PlayerAdded, PlayerRemoving, Exit.Touched,
+		-- plus one CharacterAdded per player already in the server.
+		RoundService.start()
+		local expected = 3 + #Players:GetPlayers()
+		local count = RoundService._test.connectionCount()
+		assert(count == expected, `expected {expected} connections after a retry, got {count}`)
+		assert(RoundService._test.loop(), "a retry should start the loop")
+	end,
 }
 
--- The runner has no beforeEach hook, so each test is wrapped to call it first.
+-- The runner has no beforeEach/afterEach hooks, so each test is wrapped: fresh state before, cleanup after.
 local wrapped = {}
 for name, test in tests do
 	wrapped[name] = function()
 		beforeEach()
-		test()
+		local ok, err = pcall(test)
+		afterEach()
+		if not ok then
+			error(err, 0)
+		end
 	end
 end
 return wrapped

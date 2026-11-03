@@ -164,8 +164,8 @@ local tests = {
 		local store = newStore()
 		local r = receipt("stale")
 		local key = keyOf(r)
-		-- 200 s old, well past PENDING_TIMEOUT (120 s), so the attempt that wrote it died mid-grant.
-		store.data[key] = { status = "pending", at = os.time() - 200 }
+		-- 700 s old, past PENDING_TIMEOUT (600 s, sprint-6 fix), so the attempt that wrote it died mid-grant.
+		store.data[key] = { status = "pending", at = os.time() - 700 }
 		local counter, grant = countingGrant(store, key)
 		local decision = processReceipt(r, store, grant, buyer)
 		assertDecision(decision, Decision.PurchaseGranted, "stale pending")
@@ -173,12 +173,98 @@ local tests = {
 		assert(store.data[key].status == "done", "receipt should be marked done after the takeover")
 	end,
 
+	-- Sprint-6 fix: the stale-takeover window is 600 s, so a marker a few minutes old is still busy.
+	["the stale-takeover window is 600 s"] = function()
+		assert(
+			Monetization._PENDING_TIMEOUT == 600,
+			`PENDING_TIMEOUT should be 600, got {tostring(Monetization._PENDING_TIMEOUT)}`
+		)
+	end,
+
+	["a 200 s old pending marker is still busy: NotProcessedYet and no grant"] = function()
+		local store = newStore()
+		local r = receipt("busy200")
+		local key = keyOf(r)
+		store.data[key] = { status = "pending", at = os.time() - 200, token = "other" }
+		local counter, grant = countingGrant(store, key)
+		local decision = processReceipt(r, store, grant, buyer)
+		assertDecision(decision, Decision.NotProcessedYet, "200 s old pending")
+		assert(counter.calls == 0, `a 200 s old marker must not be taken over, granted {counter.calls} times`)
+		assert(store.data[key].token == "other", "the other attempt's marker must be left untouched")
+	end,
+
+	["a marker just inside the window is busy, one just past it is taken over"] = function()
+		local inside, past = newStore(), newStore()
+		local r = receipt("edge")
+		local key = keyOf(r)
+		-- 10 s either side of 600, so a clock tick during the test can't flip the result.
+		inside.data[key] = { status = "pending", at = os.time() - 590, token = "other" }
+		past.data[key] = { status = "pending", at = os.time() - 610, token = "dead" }
+		local insideCounter, insideGrant = countingGrant(inside, key)
+		local pastCounter, pastGrant = countingGrant(past, key)
+		assertDecision(processReceipt(r, inside, insideGrant, buyer), Decision.NotProcessedYet, "590 s old")
+		assertDecision(processReceipt(r, past, pastGrant, buyer), Decision.PurchaseGranted, "610 s old")
+		assert(insideCounter.calls == 0, `590 s old marker granted {insideCounter.calls} times`)
+		assert(pastCounter.calls == 1, `610 s old marker should grant once, granted {pastCounter.calls} times`)
+	end,
+
+	-- Sprint-6 fix: the grant runs synchronously. A handler that yields is stopped there and counts as failed.
+	["the grant runs synchronously, right after the reserve, with no yield in between"] = function()
+		local store = newStore()
+		local r = receipt("sync")
+		local callsAtGrant = nil
+		local function grant(_player)
+			callsAtGrant = store.calls
+			return true
+		end
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.PurchaseGranted, "sync grant")
+		assert(callsAtGrant == 1, `the grant must run right after the reserve, saw {tostring(callsAtGrant)} calls`)
+	end,
+
+	["a handler that yields is stopped, never resumes, and returns NotProcessedYet"] = function()
+		local store = newStore()
+		local r = receipt("yielder")
+		local key = keyOf(r)
+		local reachedAfterYield = false
+		local function grant(_player)
+			coroutine.yield()
+			reachedAfterYield = true
+			return true
+		end
+		local ok, decision = pcall(processReceipt, r, store, grant, buyer)
+		assert(ok, `processReceipt must not throw when the handler yields: {tostring(decision)}`)
+		assertDecision(decision, Decision.NotProcessedYet, "yielding handler")
+		task.wait(0.1)
+		assert(not reachedAfterYield, "a yielding handler must not run past its yield")
+		assert(store.data[key] == nil, "the marker should be cleared so Roblox's retry can grant")
+	end,
+
+	["the token is lost to another attempt during the reserve: NotProcessedYet and no grant"] = function()
+		local store = newStore()
+		local r = receipt("lost")
+		local key = keyOf(r)
+		-- The reserve's write is overwritten by another attempt before UpdateAsync returns its stored value.
+		local realUpdate = store.UpdateAsync
+		function store:UpdateAsync(k, transform)
+			local result = realUpdate(self, k, transform)
+			if self.calls == 1 then
+				self.data[k] = { status = "pending", at = os.time(), token = "other" }
+				return self.data[k]
+			end
+			return result
+		end
+		local counter, grant = countingGrant(store, key)
+		assertDecision(processReceipt(r, store, grant, buyer), Decision.NotProcessedYet, "token lost")
+		assert(counter.calls == 0, `nothing may be granted once the token is lost, granted {counter.calls} times`)
+		assert(store.data[key].token == "other", "the other attempt's marker must be left untouched")
+	end,
+
 	["a stale takeover during our grant returns NotProcessedYet, grants once, and leaves the other marker alone"] = function()
 		local store = newStore()
 		local r = receipt("takeover")
 		local key = keyOf(r)
 		-- Our attempt reserves over this stale marker. While our grant runs, another attempt takes the receipt over.
-		store.data[key] = { status = "pending", at = os.time() - 200, token = "dead" }
+		store.data[key] = { status = "pending", at = os.time() - 700, token = "dead" }
 		local calls = 0
 		local function grant(_player)
 			calls += 1
@@ -198,7 +284,7 @@ local tests = {
 		local store = newStore()
 		local r = receipt("takeover-redeliver")
 		local key = keyOf(r)
-		store.data[key] = { status = "pending", at = os.time() - 200, token = "dead" }
+		store.data[key] = { status = "pending", at = os.time() - 700, token = "dead" }
 		local calls = 0
 		local function grant(_player)
 			calls += 1

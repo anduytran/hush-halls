@@ -3,7 +3,8 @@
 --   Monetization.onPass("VIP", function(player) ... end)            -- runs when an owner joins, and right after buying
 --   Monetization.onProduct("Coins100", function(player) ... return true end)  -- return true once it's given
 -- A product's receipt is reserved in a DataStore before its handler runs and marked done after,
--- so a purchase Roblox retries is never given twice. The handler runs outside UpdateAsync and may yield.
+-- so a purchase Roblox retries is never given twice. The handler runs outside UpdateAsync and must not yield
+-- (no waits or Async calls): a handler that yields is stopped and counts as a failed grant.
 -- The DataStore is opened on first use, so an unpublished Studio place can still require this module.
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
@@ -15,7 +16,9 @@ local Monetization = {}
 
 -- A "pending" receipt marker older than this (seconds) is from an attempt that died mid-grant
 -- (its server shut down, taking the unsaved grant with it), so a retry may take it over.
-local PENDING_TIMEOUT = 120
+-- Sprint-6 fix: raised from 120 s. The grant no longer yields, so a live attempt only holds the marker for
+-- two DataStore calls; 600 s leaves a wide margin before anyone may take it over.
+local PENDING_TIMEOUT = 600
 
 type PassHandler = (player: Player) -> ()
 type ProductHandler = (player: Player) -> boolean
@@ -134,12 +137,27 @@ local function isOurs(value: any, token: string): boolean
 	return type(value) == "table" and value.token == token
 end
 
+-- Sprint-6 fix: runs the grant to completion without letting it yield. If the handler yields, it is stopped
+-- there (closed, so it never resumes) and counts as failed. Returns (ok, given or error).
+local function grantWithoutYield(grant: ProductHandler, buyer: Player): (boolean, any)
+	local thread = coroutine.create(grant)
+	local resumed, given = coroutine.resume(thread, buyer)
+	if coroutine.status(thread) ~= "dead" then
+		coroutine.close(thread)
+		return false, "the handler yielded; product handlers must not yield"
+	end
+	return resumed, given
+end
+
 -- Sprint-4 fix: UpdateAsync only reserves the receipt key with a "pending" marker. The grant runs after it
 -- returns (so a retried UpdateAsync callback can never grant twice), then a second UpdateAsync marks it done.
 -- A failed grant removes the marker so Roblox's retry can try again.
 -- Sprint-5 fix: each attempt writes its marker with its own unique token, and only grants if the stored value
 -- after the reserve is that marker. Marking done only replaces our own marker: if another attempt took the
 -- receipt over meanwhile (ours went stale), its marker is left alone and we return NotProcessedYet.
+-- Sprint-6 fix: the grant runs synchronously, straight after the reserve's fresh token check, with no yield in
+-- between or inside it. Our marker could only go stale (600 s) while a DataStore call itself stalls,
+-- so a takeover can no longer overlap a grant that's still running.
 local function processReceipt(receipt: Receipt, store: DataStore, grant: ProductHandler, buyer: Player)
 	local receiptKey = `{receipt.PlayerId}_{receipt.PurchaseId}`
 	local now = os.time()
@@ -168,11 +186,13 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 	-- Sprint-5 fix: grant only once the store holds our token, not just because our callback said "reserved".
+	-- Sprint-6 fix: the token is lost (another attempt's marker came back) → NotProcessedYet, nothing granted.
 	if status == "busy" or not isOurs(reserveResult, token) then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
-	local grantOk, given = pcall(grant, buyer)
+	-- Sprint-6 fix: nothing yields between the token check above and this grant, and the grant can't yield.
+	local grantOk, given = grantWithoutYield(grant, buyer)
 	if not grantOk or given ~= true then
 		if not grantOk then
 			warn(`[Monetization] handler failed for purchase {receipt.PurchaseId}: {given}`)
@@ -211,8 +231,10 @@ local function processReceipt(receipt: Receipt, store: DataStore, grant: Product
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 
--- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync/RemoveAsync) and handler.
+-- TEST-ONLY: lets specs run a receipt against a stand-in DataStore (UpdateAsync/RemoveAsync) and handler,
+-- and read the stale-takeover window.
 Monetization._processReceipt = processReceipt
+Monetization._PENDING_TIMEOUT = PENDING_TIMEOUT
 
 MarketplaceService.ProcessReceipt = function(receipt)
 	local key = keyFor(Products.Products, receipt.ProductId)
