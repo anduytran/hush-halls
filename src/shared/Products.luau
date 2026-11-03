@@ -11,6 +11,11 @@
 export type Item = { id: number, name: string, price: number, description: string }
 
 return {
-	Passes = {} :: { [string]: Item },
-	Products = {} :: { [string]: Item },
+	Passes = {
+		NeonTrail = { id = 0, name = "Neon Trail", price = 99, description = "A cyan trail that follows you." },
+		VIP = { id = 0, name = "VIP", price = 199, description = "A gold name tag and 2x coins." },
+	} :: { [string]: Item },
+	Products = {
+		Coins100 = { id = 0, name = "100 Coins", price = 49, description = "100 coins to spend in the shop." },
+	} :: { [string]: Item },
 }
