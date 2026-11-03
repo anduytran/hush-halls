@@ -16,6 +16,11 @@ Always-on round info while sneaking through the hall: how long is left, how high
 
 ## Elements
 - RoundInfo: `State.RoundState` + `State.TimeLeft` as m:ss; shows "Waiting" until State exists
+- GoalText: objective line under the timer (child of RoundInfo, so nothing else moves; wraps, 14–20 px scaled text with a light stroke). Follows `State.RoundState` and `LocalPlayer.Escaped`:
+  - Lobby / unset: "Next round soon. Reach the EXIT before the water rises."
+  - Running: "Reach the EXIT. Sprinting is loud."
+  - Running + Escaped: "You escaped! Wait for the next round." in green
+  - Ended: "Round over."
 - WaterBar: fill = `State.WaterLevel / 20`, clamped 0–1
 - NoiseMeter: fill = `State.Noise` (0–1); green, turns Danger red and caption reads "Noise: LOUD" above 0.6 (text change so it isn't colour-only)
 - Coins: `leaderstats.Coins`, Accent colour

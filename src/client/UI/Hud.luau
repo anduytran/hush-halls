@@ -95,6 +95,14 @@ function Hud.mount()
 	topPad.Parent = top
 	local roundText = label(top, "RoundText", FONT_BOLD, 28)
 
+	-- Goal line under the timer; a child of RoundInfo so nothing else in the HUD moves
+	local goalText = label(top, "GoalText", FONT_MEDIUM, 20)
+	goalText.AnchorPoint = Vector2.new(0.5, 0)
+	goalText.Position = UDim2.new(0.5, 0, 1, 10)
+	goalText.Size = UDim2.new(2.4, 0, 0, 40)
+	goalText.TextWrapped = true
+	goalText.TextStrokeTransparency = 0.5
+
 	-- Top right: coins
 	local coins = panel(gui, "Coins")
 	coins.AnchorPoint = Vector2.new(1, 0)
@@ -214,6 +222,26 @@ function Hud.mount()
 			noiseFill.BackgroundColor3 = if loud then COLOR_DANGER else COLOR_NOISE
 			noiseCaption.Text = if loud then "Noise: LOUD" else "Noise"
 		end
+		local function refreshGoal()
+			local roundState = state:GetAttribute("RoundState")
+			local escaped = player:GetAttribute("Escaped") == true
+			if roundState == "Running" and escaped then
+				goalText.Text = "You escaped! Wait for the next round."
+				goalText.TextColor3 = COLOR_NOISE
+			elseif roundState == "Running" then
+				goalText.Text = "Reach the EXIT. Sprinting is loud."
+				goalText.TextColor3 = COLOR_TEXT
+			elseif roundState == "Ended" then
+				goalText.Text = "Round over."
+				goalText.TextColor3 = COLOR_TEXT
+			else
+				goalText.Text = "Next round soon. Reach the EXIT before the water rises."
+				goalText.TextColor3 = COLOR_TEXT
+			end
+		end
+		state:GetAttributeChangedSignal("RoundState"):Connect(refreshGoal)
+		player:GetAttributeChangedSignal("Escaped"):Connect(refreshGoal)
+		refreshGoal()
 		state:GetAttributeChangedSignal("RoundState"):Connect(refreshRound)
 		state:GetAttributeChangedSignal("TimeLeft"):Connect(refreshRound)
 		state:GetAttributeChangedSignal("WaterLevel"):Connect(refreshWater)
