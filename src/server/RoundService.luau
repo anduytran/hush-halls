@@ -56,7 +56,12 @@ local function addCoins(player: Player, amount: number)
 	local leaderstats = player:FindFirstChild("leaderstats")
 	local coins = leaderstats and leaderstats:FindFirstChild("Coins")
 	if coins and coins:IsA("IntValue") then
-		coins.Value += amount
+		-- VIP pass sets CoinMultiplier = 2; anything that isn't a number >= 1 counts as 1.
+		local multiplier = player:GetAttribute("CoinMultiplier")
+		if type(multiplier) ~= "number" or multiplier ~= multiplier or multiplier < 1 or multiplier == math.huge then
+			multiplier = 1
+		end
+		coins.Value += math.round(amount * multiplier)
 	end
 end
 
@@ -387,6 +392,9 @@ RoundService._test = {
 	end,
 	started = function(): boolean
 		return started
+	end,
+	addCoins = function(player: Player, amount: number)
+		addCoins(player, amount)
 	end,
 }
 

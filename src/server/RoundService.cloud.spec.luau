@@ -264,6 +264,36 @@ local tests = {
 		assert(RoundService._test.started(), "start() should mark the service started")
 		assert(RoundService._test.loop(), "start() should start the loop")
 	end,
+
+	-- Sprint-14: the escape reward is 10 Coins, times the player's CoinMultiplier attribute when that is a number >= 1.
+	-- The fake player has just the two members addCoins reads: FindFirstChild and GetAttribute.
+	["escape coins use CoinMultiplier: none = 10, 2 = 20, bad values = 10"] = function()
+		local function coinsAfterReward(multiplier: any): number
+			local leaderstats = Instance.new("Folder")
+			leaderstats.Name = "leaderstats"
+			local coins = Instance.new("IntValue")
+			coins.Name = "Coins"
+			coins.Parent = leaderstats
+			local player = {
+				FindFirstChild = function(_self: any, name: string)
+					return if name == "leaderstats" then leaderstats else nil
+				end,
+				GetAttribute = function(_self: any, name: string)
+					return if name == "CoinMultiplier" then multiplier else nil
+				end,
+			}
+			RoundService._test.addCoins(player :: any, 10)
+			local value = coins.Value
+			leaderstats:Destroy()
+			return value
+		end
+		assert(coinsAfterReward(nil) == 10, "no attribute should give +10")
+		assert(coinsAfterReward(2) == 20, "CoinMultiplier 2 should give +20")
+		assert(coinsAfterReward(1.5) == 15, "CoinMultiplier 1.5 should give +15")
+		for _, bad in { 0, 0.5, -3, "2", true, 0 / 0, math.huge } do
+			assert(coinsAfterReward(bad) == 10, `CoinMultiplier {tostring(bad)} should count as 1`)
+		end
+	end,
 }
 
 -- The runner has no beforeEach/afterEach hooks, so each test is wrapped: fresh state before, cleanup after.
