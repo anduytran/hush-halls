@@ -58,9 +58,14 @@ Sprint 8 (2026-11-03): receipts, no takeover (merged; scripter reports checks pa
 - [x] Receipts: stale-pending takeover removed; any pending marker is busy until its owner (same token) replaces it. Refused/failed grants write a `released` marker that can be reserved again (no more RemoveAsync). Late handler results and failed done-writes are retried in the background until recorded. Known cost: a server dying mid-purchase leaves it stuck pending (manual DataStore fix).
 - [x] `Monetization.cloud.spec.luau` updated.
 
+Sprint 9 (2026-11-03): five sprint-8 reviewer follow-ups on receipts (merged; scripter reports checks pass, not run in a live round).
+- [x] A pending marker over 24 h old (or with no time) counts as released, so a purchase whose server died recovers after a day instead of needing a manual fix.
+- [x] Background writes give up after 10 tries; a failed reserve releases only if the stored marker holds our token; BindToClose waits up to 25 s for in-flight writes and late grants.
+- [x] `Monetization.cloud.spec.luau` runs on a fake clock. Known cost: a yielding grant whose done write never lands can be granted again after 24 h.
+
 ## Needs a playtest
-None of these have run in a live round yet. Studio wasn't reachable in sprints 1–8.
-- Run `Monetization.cloud.spec.luau` (sprint 8: no takeover, `released` markers, late results always recorded).
+None of these have run in a live round yet. Studio wasn't reachable in sprints 1–9.
+- Run `Monetization.cloud.spec.luau` (sprint 9: 24 h stale rule, retry cap, token-checked release, shutdown drain).
 - Run `SpeedSampler.spec.luau` (sprint 7: teleports hold the previous reading).
 - Run `RoundService.cloud.spec.luau`: forced failure in each start step rolls back cleanly.
 - Check a failed RoundService start retries cleanly and a started system isn't restarted.

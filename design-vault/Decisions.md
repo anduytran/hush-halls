@@ -2,6 +2,11 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 9: receipt follow-ups
+- **Pending markers go stale after 24 h** and count as released. Eases sprint 8's stuck-forever cost; a day is far beyond any live attempt. Accepted cost: a yielding grant whose done write never lands may be granted twice a day later.
+- **Background writes capped at 10 tries**, and BindToClose drains in-flight work for up to 25 s.
+- **A failed reserve releases only after reading back our own token**, not blindly.
+
 ## 2026-11-03 — Sprint 8: receipts without takeover
 - **Stale pending markers are never taken over.** Only the attempt holding the marker's token can replace it, which closes the double-grant gap for good. Replaces sprint 7's 180 s window. Cost accepted: a server that dies mid-purchase leaves that purchase stuck pending until fixed by hand in the DataStore.
 - **Refused or failed grants write a `released` marker** instead of deleting the key, so a stale attempt can't race a delete.
