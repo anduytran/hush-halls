@@ -2,6 +2,11 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 12: receipt follow-ups
+- **Only a given-up "done" write blocks regrants**, and the block expires 24 h + 30 min later. A released give-up can be bought again. Replaces sprint 11's block on any give-up for the server's lifetime.
+- **One 30 min heartbeat window per attempt**, shared by the grant and result-write retries.
+- **Test hooks always exist but are locked** unless Studio or `_test.enable()`. Replaces sprint 11's Studio-only hooks, which left non-Studio runs untested.
+
 ## 2026-11-03 — Sprint 11: receipt follow-ups
 - **Heartbeats stop after 30 min** (MAX_HEARTBEAT_AGE), replacing sprint 10's "busy forever" cost. Accepted cost: a handler yielding over 30 min + 24 h may be granted twice.
 - **No-time markers are restamped once only**, so a marker can't be extended forever.
