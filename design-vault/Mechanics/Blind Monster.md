@@ -1,5 +1,5 @@
 ---
-status: in-progress   # round-scoped + server-side hearing in sprint 2; averaged SpeedSampler in sprint 3; repeating hall-wait warning in sprint 4, not playtested; walking silent (hearing limit 12) in sprint 15, not playtested
+status: in-progress   # round-scoped + server-side hearing in sprint 2; averaged SpeedSampler in sprint 3; repeating hall-wait warning in sprint 4, not playtested; walking silent (hearing limit 12) in sprint 15; Studio-only test hooks and 12–14 band documented in sprint 16 (spec 6/6 in Studio), not playtested
 tags: [design, mechanic]
 ---
 # Blind monster

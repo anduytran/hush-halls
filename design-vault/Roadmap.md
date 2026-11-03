@@ -92,7 +92,12 @@ Sprint 14 (2026-11-03): VIP 2x coins on escape (merged; new spec in `RoundServic
 Sprint 15 (2026-11-03): walking is silent to the monster (merged; spec added to `Monster.cloud.spec.luau`, not run in a live round).
 - [x] Monster `HEARD_SPEED` raised from 8 to 12, so walkers (10 studs/s) are never targeted and anyone over 12 is heard. New `Monster.isHeard(speed)` for tests.
 
+Sprint 16 (2026-11-03): monster hearing reviewer follow-ups (merged; spec ran in Studio, 6 pass, not run in a live round).
+- [x] `Monster.isHeard` removed from the public API; test hooks moved to a Studio-only `Monster._test` (isHeard, HEARD_SPEED, SPRINT_SPEED).
+- [x] Comments explain the 12–14 studs/s band: heard, but treated like a walker, not a sprinter. New spec covers it.
+
 ## Needs a playtest
+- Monster hearing band (sprint 16): a player at 12–14 studs/s is heard but chased after sprinters; `Monster._test` absent on a live server.
 - Walking is silent (sprint 15): a walker at 10 studs/s is never chased, a sprinter is; check the monster still feels threatening when everyone walks.
 - VIP escape pays 20 coins, non-VIP 10 (sprint 14; needs a VIP pass ID to test the real grant).
 None of these have run in a live round yet. Studio wasn't reachable in sprints 1–11; sprints 12–13 receipt specs ran in Studio (54, then 59 pass) but not in a live round.

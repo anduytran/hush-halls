@@ -2,6 +2,10 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 16: hearing follow-ups
+- **Monster test hooks are Studio-only** (`Monster._test`), like RoundService, replacing sprint 15's public `Monster.isHeard`.
+- **Kept the 12–14 studs/s band on purpose**: heard, but ranked like a walker so the monster drifts toward you instead of chasing first.
+
 ## 2026-11-03 — Sprint 15: walking is silent
 - **Raised the monster's hearing limit to 12 studs/s** (walk is 10, sprint 24), so walking is silent and only sprinting draws the monster. Fits the "sprinting is loud, walking is quiet" rule. Alternative considered: lower walk speed below 8 so walkers stay faintly audible; rejected as it slows every round.
 
