@@ -8,6 +8,7 @@
 -- RISE_PER_SECOND is 0.3 (was 0.6) so the monster, not the water, is the main sprint punishment.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local GameState = require(ReplicatedStorage.Shared.GameState)
 local SpeedSampler = require(script.Parent.SpeedSampler)
@@ -33,6 +34,8 @@ local underwaterSince: { [Player]: number } = {}
 -- Sprint-3 fix: the teleport filter now only skips a single step longer than 40 studs (SpeedSampler.MAX_STEP),
 -- instead of zeroing anyone measured above 60 studs/s, so sprinting players stay audible. Same averaging as Monster.
 local sampler = SpeedSampler.new()
+-- Studio-only (set through NoiseService._test): when not nil, replaces the measured loudest noise.
+local noiseOverride: number? = nil
 
 local function allowSprintEvent(player: Player): boolean
 	local now = os.clock()
@@ -153,6 +156,9 @@ local function step(water: Part, dt: number)
 			sampler.forget(player)
 		end
 	end
+	if noiseOverride ~= nil then
+		loudest = noiseOverride
+	end
 	State:SetAttribute("Noise", loudest)
 
 	if State:GetAttribute("RoundState") == "Running" then
@@ -178,6 +184,18 @@ local function step(water: Part, dt: number)
 			underwaterSince[player] = nil
 		end
 	end
+end
+
+-- TEST-ONLY hooks, like Monster._test: the table exists only in Studio, so it is not part of the API.
+if RunService:IsStudio() then
+	NoiseService._test = {
+		-- Forces State.Noise (and so the water rise) to n each step; nil goes back to measuring players.
+		setNoiseOverride = function(n: number?)
+			noiseOverride = if n ~= nil then math.clamp(n, 0, 1) else nil
+		end,
+		RISE_PER_SECOND = RISE_PER_SECOND,
+		TICK = TICK,
+	}
 end
 
 function NoiseService.start()
