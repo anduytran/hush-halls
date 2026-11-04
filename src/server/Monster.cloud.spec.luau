@@ -110,4 +110,99 @@ return {
 		assert(test.HEARD_SPEED < test.SPRINT_SPEED, "the heard threshold should sit below the sprint threshold")
 		assert(16 > test.SPRINT_SPEED, "16 studs/s should count as sprinting")
 	end,
+
+	["first reading at or above HEARD_SPEED is not yet confirmed"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		test.resetHeard()
+		local key = {}
+		assert(test.confirmHeard(key, 12, 0) == false, "the first reading at 12 studs/s should not confirm")
+	end,
+
+	["readings at or above HEARD_SPEED confirm once HEAR_CONFIRM seconds have passed"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		test.resetHeard()
+		local key = {}
+		-- 0.5 is exact in binary floating point, so 0.5 - 0 >= HEAR_CONFIRM holds without float noise.
+		assert(test.confirmHeard(key, 13, 0) == false, "at 0 s the player should not be confirmed yet")
+		assert(test.confirmHeard(key, 13, 0.2) == false, "at 0.2 s the player should not be confirmed yet")
+		assert(test.confirmHeard(key, 13, 0.4) == false, "at 0.4 s the player should not be confirmed yet")
+		assert(test.confirmHeard(key, 13, 0.5) == true, "at 0.5 s the player should be confirmed")
+		assert(test.confirmHeard(key, 13, 0.6) == true, "at 0.6 s the player should stay confirmed")
+	end,
+
+	["a reading below HEARD_SPEED restarts the hold timer"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		test.resetHeard()
+		local key = {}
+		assert(test.confirmHeard(key, 13, 0) == false, "at 0 s should not be confirmed yet")
+		assert(test.confirmHeard(key, 10, 0.3) == false, "a 10 studs/s reading should not confirm")
+		assert(test.confirmHeard(key, 13, 0.4) == false, "at 0.4 s should restart the timer, not confirm")
+		assert(test.confirmHeard(key, 13, 0.8) == false, "at 0.8 s only 0.4 s has passed since the restart")
+		assert(test.confirmHeard(key, 13, 0.91) == true, "at 0.91 s 0.51 s has passed since the restart")
+	end,
+
+	["walk speed (10) never confirms however long it lasts"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		test.resetHeard()
+		local key = {}
+		for step = 0, 120 do
+			local now = step * 0.5
+			assert(test.confirmHeard(key, 10, now) == false, "10 studs/s confirmed at " .. tostring(now) .. " s")
+		end
+	end,
+
+	["two different keys are tracked independently"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		test.resetHeard()
+		local a = {}
+		local b = {}
+		assert(test.confirmHeard(a, 13, 0) == false, "a at 0 s should not be confirmed yet")
+		assert(test.confirmHeard(b, 13, 0.3) == false, "b at 0.3 s should not be confirmed yet")
+		assert(test.confirmHeard(a, 13, 0.5) == true, "a at 0.5 s should be confirmed")
+		assert(test.confirmHeard(b, 13, 0.5) == false, "b at 0.5 s has only held 0.2 s")
+		assert(test.confirmHeard(b, 13, 0.8) == true, "b at 0.8 s has held 0.5 s and should be confirmed")
+		assert(test.confirmHeard(a, 10, 0.9) == false, "a dropping to 10 studs/s should not confirm")
+		assert(test.confirmHeard(b, 13, 0.9) == true, "b should stay confirmed when a resets")
+		assert(test.confirmHeard(a, 13, 1.0) == false, "a should need a fresh 0.5 s hold after its reset")
+	end,
+
+	["resetHeard clears a confirmed key"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		test.resetHeard()
+		local key = {}
+		assert(test.confirmHeard(key, 13, 0) == false, "at 0 s should not be confirmed yet")
+		assert(test.confirmHeard(key, 13, 0.5) == true, "at 0.5 s should be confirmed before the reset")
+		test.resetHeard()
+		assert(test.confirmHeard(key, 13, 0.6) == false, "after resetHeard the next reading should not confirm")
+		assert(test.confirmHeard(key, 13, 1.0) == false, "at 1.0 s only 0.4 s has passed since the reset")
+		assert(test.confirmHeard(key, 13, 1.2) == true, "at 1.2 s 0.6 s has passed since the reset")
+	end,
+
+	["HEAR_CONFIRM is 0.5 and HEARD_SPEED stays below SPRINT_SPEED"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		assert(test.HEAR_CONFIRM == 0.5, "expected HEAR_CONFIRM 0.5, got " .. tostring(test.HEAR_CONFIRM))
+		assert(test.HEARD_SPEED == 12, "expected HEARD_SPEED 12, got " .. tostring(test.HEARD_SPEED))
+		assert(test.HEARD_SPEED < test.SPRINT_SPEED, "the heard threshold should sit below the sprint threshold")
+	end,
 }

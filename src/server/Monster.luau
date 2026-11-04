@@ -20,6 +20,10 @@ local SPRINT_SPEED = 14
 -- At or above this speed the monster hears you. Walk speed is 10, so walkers stay silent; 12-14 = heard
 -- but not sprinting; above 14 = sprint, chased first.
 local HEARD_SPEED = 12
+-- Sprint 29 fix: a player only counts as heard once they've stayed at or above HEARD_SPEED this long.
+-- In a live soak one brief ~12 studs/s reading from a walker (wall corner or network jitter) made the monster
+-- drift down the hall to that spot and kill the walker. A real sprinter (24) is over the line the whole time.
+local HEAR_CONFIRM = 0.5
 local QUIET_NOISE = 0.05 -- below this the monster drifts to the last heard spot
 local BASE_SPEED = 4
 local NOISE_SPEED = 14
@@ -35,6 +39,8 @@ type Sample = { root: BasePart, position: Vector3, speed: number }
 local started = false
 -- Latest position and server-measured horizontal speed of each InRound player.
 local samples: { [Player]: Sample } = {}
+-- When each player's speed last went up to HEARD_SPEED without dropping below it since.
+local heardSince: { [any]: number } = {}
 -- Sprint-3 fix: speed is averaged over ~0.5 s by the helper NoiseService also uses (samples under
 -- 0.1 s apart are skipped), so a walker's uneven network updates no longer read as sprinting.
 local sampler = SpeedSampler.new()
@@ -135,6 +141,7 @@ local function sampleSpeeds()
 		local root = aliveRoot(player)
 		if not root then
 			samples[player] = nil
+			heardSince[player] = nil
 			sampler.forget(player)
 			continue
 		end
@@ -145,6 +152,7 @@ local function sampleSpeeds()
 	for player in samples do
 		if player.Parent ~= Players then
 			samples[player] = nil
+			heardSince[player] = nil
 			sampler.forget(player)
 		end
 	end
@@ -156,16 +164,32 @@ local function isHeard(speed: number): boolean
 	return speed >= HEARD_SPEED
 end
 
+-- Records this reading and says whether the player has been heard for HEAR_CONFIRM seconds in a row.
+local function confirmHeard(player: any, speed: number, now: number): boolean
+	if not isHeard(speed) then
+		heardSince[player] = nil
+		return false
+	end
+	local since = heardSince[player]
+	if not since then
+		heardSince[player] = now
+		return false
+	end
+	return now - since >= HEAR_CONFIRM
+end
+
 local function findLoudest(from: Vector3): Vector3?
 	local bestPos: Vector3? = nil
 	local bestScore = -math.huge
+	local now = os.clock()
 	for player, sample in samples do
 		if player.Parent ~= Players or aliveRoot(player) ~= sample.root then
+			heardSince[player] = nil
 			continue
 		end
 		local speed = sample.speed
 		local distance = (sample.position - from).Magnitude
-		if isHeard(speed) and distance <= HEARING_RANGE then
+		if confirmHeard(player, speed, now) and distance <= HEARING_RANGE then
 			local score = speed + (if speed > SPRINT_SPEED then 1000 else 0)
 			if score > bestScore then
 				bestScore = score
@@ -224,6 +248,7 @@ local function run(hall: Instance)
 
 		if level < QUIET_NOISE then
 			-- Silence: drift to where it last heard someone, then wait there.
+			table.clear(heardSince)
 			if lastHeard and moveToward(body, lastHeard, DRIFT_SPEED, dt) then
 				lastHeard = nil
 			end
@@ -245,6 +270,7 @@ local function run(hall: Instance)
 		end
 		table.clear(connections)
 		table.clear(samples)
+		table.clear(heardSince)
 		sampler.clear()
 		lastHeard = nil
 		body.CanTouch = false
@@ -277,7 +303,13 @@ end
 if RunService:IsStudio() then
 	Monster._test = {
 		isHeard = isHeard,
+		-- Sprint 29: pass your own key (any table) as the player; clear with resetHeard.
+		confirmHeard = confirmHeard,
+		resetHeard = function()
+			table.clear(heardSince)
+		end,
 		HEARD_SPEED = HEARD_SPEED,
+		HEAR_CONFIRM = HEAR_CONFIRM,
 		SPRINT_SPEED = SPRINT_SPEED,
 	}
 end
