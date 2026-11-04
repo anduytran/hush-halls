@@ -76,6 +76,20 @@ local function assertNoRise(roundState: string)
 end
 
 return {
+	["walking is quiet (0.05) and sprinting is full noise (1)"] = function()
+		local test = NoiseService._test
+		if not test then
+			warn("[NoiseService.spec] walk/sprint noise not checked: NoiseService._test only exists in Studio")
+			return
+		end
+		local walk = test.noiseFromSpeed(test.WALK_SPEED)
+		local sprint = test.noiseFromSpeed(test.SPRINT_SPEED)
+		assert(math.abs(walk - 0.05) <= 1e-6, `noise at WALK_SPEED is {walk}, expected 0.05`)
+		assert(math.abs(sprint - 1) <= 1e-6, `noise at SPRINT_SPEED is {sprint}, expected 1`)
+		-- A full 120 s round of walking stays under the 3.43 root height.
+		assert(walk * test.RISE_PER_SECOND * 120 < 3.43, "walking a full round would drown the player")
+	end,
+
 	["water does not rise in Lobby"] = guarded("Lobby", function()
 		assertNoRise("Lobby")
 	end),

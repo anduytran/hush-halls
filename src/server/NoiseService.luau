@@ -6,6 +6,8 @@
 -- Noise * RISE_PER_SECOND. An InRound player whose HumanoidRootPart stays under the water, inside
 -- its XZ footprint, for DROWN_TIME dies. The water drains when a round starts and in the lobby.
 -- RISE_PER_SECOND is 0.3 (was 0.6) so the monster, not the water, is the main sprint punishment.
+-- SNEAK_NOISE is 0.05 (was 0.1): full-speed walking for a 120 s round raises the water to ~1.8 studs
+-- (0.05 * 0.3 * 120), under the 3.43 root height, so only sprinting can drown you.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -19,7 +21,7 @@ local TICK = 0.2
 local RISE_PER_SECOND = 0.3
 local DROWN_TIME = 2
 local IDLE_SPEED = 0.5 -- below this horizontal speed counts as silent
-local SNEAK_NOISE = 0.1 -- noise at full walk speed
+local SNEAK_NOISE = 0.05 -- noise at full walk speed
 local SPRINT_RATE_LIMIT = 10 -- Sprint events per second per player
 local DEFAULT_FLOOR_SIZE = Vector3.new(200, 1, 200)
 
@@ -77,7 +79,7 @@ local function applySpeed(player: Player)
 	end
 end
 
--- Maps horizontal speed to noise: idle 0, walk (10) ~0.1, sprint (24) ~1.
+-- Maps horizontal speed to noise: idle 0, walk (10) 0.05, sprint (24) ~1.
 local function noiseFromSpeed(speed: number): number
 	if speed < IDLE_SPEED then
 		return 0
@@ -193,6 +195,9 @@ if RunService:IsStudio() then
 		setNoiseOverride = function(n: number?)
 			noiseOverride = if n ~= nil then math.clamp(n, 0, 1) else nil
 		end,
+		noiseFromSpeed = noiseFromSpeed,
+		WALK_SPEED = WALK_SPEED,
+		SPRINT_SPEED = SPRINT_SPEED,
 		RISE_PER_SECOND = RISE_PER_SECOND,
 		TICK = TICK,
 	}
