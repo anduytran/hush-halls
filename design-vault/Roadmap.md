@@ -1,198 +1,28 @@
 # Roadmap
 
 ## Now: Milestone 1 — Ship v1 (see [[Ship Checklist]])
-Sprint 1 (2026-11-03): all six pieces merged. Only the hall map has run in Studio so far.
-- [x] Greybox hall map (Start, Exit, Floor): `src/server/Map/HallBuilder.luau`. Built and QA-checked in Studio.
-- [x] [[Mechanics/Sprint Noise and Water]]: `src/server/NoiseService.luau`, `src/shared/GameState.luau`
-- [x] [[Mechanics/Blind Monster]]: `src/server/Monster.luau`
-- [x] [[Mechanics/Round Loop]]: `src/server/RoundService.luau`
-- [x] [[Mechanics/Products and Grants]]: `src/shared/Products.luau`, `src/server/main.server.luau`
-- [x] HUD + Shop menu: `src/client/UI/Hud.luau`, `src/client/UI/ShopMenu.luau` (spec in ui-vault)
+As of sprint 32 (2026-11-04): the hall, [[Mechanics/Sprint Noise and Water]], [[Mechanics/Blind Monster]], [[Mechanics/Round Loop]], HUD (goal line, touch sprint button) and Shop menu are built and merged. A 10-minute solo Studio soak (six rounds, 670 s) ran with clean Output: timeouts, walk escapes (+10 coins), a sprinter caught by the monster. Water rise is 0.3 studs/s at full noise, so the monster punishes sprinting before drowning does. Receipt handling ([[Mechanics/Products and Grants]]) is hardened and spec-tested, but sales are blocked on product IDs. What's left for v1 is mostly product-owner work: real two-player and phone checks, product IDs, store page, publish.
 
-Sprint 2 (2026-11-03): round loop wired end to end and reviewer blockers fixed (merged; checks pass, not run in Studio).
-- [x] Startup order: `main.server.luau` builds the hall, then starts NoiseService, Monster, RoundService.
-- [x] `InRound` player attribute: only round participants make noise, drown, or can be heard and killed. Spectators wait on the lobby platform.
-- [x] Monster and noise use server-side position deltas (not client velocity); teleports ignored. Monster is idle and parked outside Running.
-- [x] Round spawn retries LoadCharacter; stale Died handlers from earlier rounds ignored.
-- [x] Monetization: lazy DataStore, grant-then-record receipts with no double grants.
-- [x] Cloud specs added: `Monster.cloud.spec.luau`, `RoundService.cloud.spec.luau` (not run yet).
-
-Sprint 3 (2026-11-03): six reviewer follow-ups on the round loop fixed (merged; checks pass, not run in Studio).
-- [x] Receipts: check, grant and record happen in one `UpdateAsync` on the receipt key (`Monetization.luau`).
-- [x] New `src/server/SpeedSampler.luau` (+ spec): speed averaged over about 0.5 s, shared by Monster and NoiseService, so a walker's uneven network updates don't read as sprinting.
-- [x] Teleport filter only skips a single step over 40 studs (`SpeedSampler.MAX_STEP`), so sprinters stay audible.
-- [x] Monster waits for the hall in its own task; `start()` returns straight away.
-- [x] Players who join while a round is spawning are handled as spectators (`RoundService.luau`).
-- [x] `main.server.luau`: requiring and building the hall are both in the pcall, so a broken HallBuilder only warns.
-- [x] `RoundService.cloud.spec.luau`: each test starts from fresh round state.
-
-Sprint 4 (2026-11-03): reviewer follow-ups (merged; checks pass, not run in a live round).
-- [x] Receipts: `UpdateAsync` only reserves a pending marker; the grant runs outside it, then a second `UpdateAsync` marks it done. Failed grant drops the marker (NotProcessedYet). Stale pending markers (over 120 s) are taken over. New `Monetization.cloud.spec.luau` with a fake store.
-- [x] `main.server.luau`: a system whose `start()` errors is retried every 5 s, up to 5 times.
-- [x] Monster warns every 30 s while it waits for the hall, instead of once.
-- [x] `RoundService.stop()` does nothing unless started (test-only).
-- [x] SpeedSampler: a single step over 40 studs is kept but capped at sprint speed, so there's no silent gap. (Replaced in sprint 5.)
-
-Sprint 5 (2026-11-03): five sprint-4 reviewer follow-ups (merged; checks pass, not run in a live round).
-- [x] Receipts: each attempt's pending marker carries its own token; it grants only if the store holds that token, and marks done only over its own marker. Known limit: a handler that yields past 120 s while another server takes over can still double-grant.
-- [x] `main.server.luau`: a system that started once is never started again by the retry loop.
-- [x] `RoundService`: a failed `start()` undoes what it set up; `stop()` also clears the platform. Test hooks moved into `RoundService._test`.
-- [x] SpeedSampler: a single step over 40 studs now resets the player's entry (reading 0, like a respawn) instead of being capped. (Replaced in sprint 6.)
-- [x] Specs updated: `Monetization.cloud.spec.luau`, `RoundService.cloud.spec.luau`, `SpeedSampler.spec.luau`.
-
-Sprint 6 (2026-11-03): five sprint-5 reviewer follow-ups (merged; scripter reports checks pass, not run in a live round).
-- [x] Receipts: the grant handler runs synchronously right after the token check; a handler that yields is stopped and counts as failed. Stale-takeover window raised from 120 s to 600 s. This closes sprint 5's known double-grant gap.
-- [x] SpeedSampler: a step over 40 studs is clamped to sprint speed and the entry kept, so a sprinter can't go silent by teleporting (reverses sprint 5's reset to 0).
-- [x] `RoundService.start()`: each setup step runs in its own pcall; the error names the failing step, with the same rollback.
-- [x] `RoundService.cloud.spec.luau`: every test starts from fresh state and cleans up after itself.
-- [x] Specs updated for all three files.
-
-Sprint 7 (2026-11-03): six sprint-6 reviewer follow-ups (merged; scripter reports checks pass, not run in a live round).
-- [x] Receipts: a grant handler that yields is no longer stopped (replaces sprint 6's cancel). The receipt answers NotProcessedYet and keeps its pending marker; if the handler later returns true it is marked done. Stale-takeover window lowered from 600 s to 180 s.
-- [x] SpeedSampler: a step over 40 studs is dropped. The sample keeps the previous average and the baseline moves to the new spot (replaces sprint 6's clamp to sprint speed).
-- [x] `RoundService.start()`: no test-only branch; the `_test.beforeStep` hook does the forced failures. `onPlayerAdded` and `spawnAtStart` now sit inside their steps' pcall and rollback.
-- [x] `RoundService.cloud.spec.luau`: skips itself during a live round, and detaches/restores the real lobby platform instead of destroying it.
-- [x] Specs updated for all three files.
-
-Sprint 8 (2026-11-03): receipts, no takeover (merged; scripter reports checks pass, not run in a live round).
-- [x] Receipts: stale-pending takeover removed; any pending marker is busy until its owner (same token) replaces it. Refused/failed grants write a `released` marker that can be reserved again (no more RemoveAsync). Late handler results and failed done-writes are retried in the background until recorded. Known cost: a server dying mid-purchase leaves it stuck pending (manual DataStore fix).
-- [x] `Monetization.cloud.spec.luau` updated.
-
-Sprint 9 (2026-11-03): five sprint-8 reviewer follow-ups on receipts (merged; scripter reports checks pass, not run in a live round).
-- [x] A pending marker over 24 h old (or with no time) counts as released, so a purchase whose server died recovers after a day instead of needing a manual fix.
-- [x] Background writes give up after 10 tries; a failed reserve releases only if the stored marker holds our token; BindToClose waits up to 25 s for in-flight writes and late grants.
-- [x] `Monetization.cloud.spec.luau` runs on a fake clock. Known cost: a yielding grant whose done write never lands can be granted again after 24 h.
-
-Sprint 10 (2026-11-03): sprint-9 reviewer follow-ups on receipts (merged; scripter reports checks pass, not run in a live round).
-- [x] A live attempt heartbeats its pending marker's time every 60 s (while a yielding grant runs and while results are retried), so only markers from dead servers go stale. Heartbeat can't undo done/released.
-- [x] A pending marker with no time now counts as busy and is restamped by the reserve.
-- [x] BindToClose waits 20 s (was 25). Warnings name the receipt key and go through a hookable logger.
-- [x] `Monetization.cloud.spec.luau` gained a fake timer (`advance`) and warn capture. Known cost: a handler that never returns keeps its receipt busy forever.
-
-Sprint 11 (2026-11-03): sprint-10 reviewer follow-ups on receipts (merged; scripter reports checks pass, not run in a live round).
-- [x] A heartbeat stops (one warning) after 30 min, so a handler that never returns lets its marker go stale like a dead server's. Known cost: a handler yielding over 30 min + 24 h can be granted twice.
-- [x] A marker with no time is restamped only once; after that it is just busy.
-- [x] A receipt whose result write was given up on is never granted again by that server.
-- [x] Test hooks (`_processReceipt`, `_test`) exist only in Studio. Outside Studio the spec only checks the hooks are absent.
-
-Sprint 12 (2026-11-03): sprint-11 reviewer follow-ups on receipts (merged; scripter reports all 54 spec tests pass in Studio, not run in a live round).
-- [x] Each try is one `Attempt`; the 30 min heartbeat window is shared by the grant and the result-write retries, with one stop warning per attempt.
-- [x] Only a given-up "done" blocks regrants; a released give-up clears the block. Blocks expire after 24 h + 30 min.
-- [x] `Monetization._test` always exists but is frozen and errors unless enabled (Studio, or `_test.enable()`), so the spec really tests receipts outside Studio too. Old `_processReceipt`/`_RETRY_FIRST` hooks removed.
-
-Sprint 13 (2026-11-03): sprint-12 reviewer follow-ups on receipts (merged; scripter reports all 59 spec tests pass in a Studio playtest, not run in a live round).
-- [x] `Monetization._test` exists only in Studio and starts off; `enable()`/`disable()` toggle it, and the spec restores the state per test.
-- [x] Expired regrant blocks are pruned on every receipt and every new block.
-- [x] Spec write failures now fail inside the real UpdateAsync (nothing written, then throws).
-- Known limit (documented in code): after the 30 min heartbeat cap, a receipt can still be granted twice once its marker goes stale or the block expires.
-
-Sprint 14 (2026-11-03): VIP 2x coins on escape (merged; new spec in `RoundService.cloud.spec.luau`, not run in a live round).
-- [x] Escape pays 10 × the player's `CoinMultiplier` attribute (VIP pass sets 2 → 20 coins); a missing or bad value (non-number, NaN, < 1, infinite) counts as 1.
-
-Sprint 15 (2026-11-03): walking is silent to the monster (merged; spec added to `Monster.cloud.spec.luau`, not run in a live round).
-- [x] Monster `HEARD_SPEED` raised from 8 to 12, so walkers (10 studs/s) are never targeted and anyone over 12 is heard. New `Monster.isHeard(speed)` for tests.
-
-Sprint 16 (2026-11-03): monster hearing reviewer follow-ups (merged; spec ran in Studio, 6 pass, not run in a live round).
-- [x] `Monster.isHeard` removed from the public API; test hooks moved to a Studio-only `Monster._test` (isHeard, HEARD_SPEED, SPRINT_SPEED).
-- [x] Comments explain the 12–14 studs/s band: heard, but treated like a walker, not a sprinter. New spec covers it.
-
-Sprint 17 (2026-11-03): HUD goal line (merged; client spec `Hud.cloud.spec.luau` added, not run in Studio).
-- [x] `RoundInfo.GoalText` under the timer: "Reach the EXIT. Sprinting is loud." while running, an escaped message after escaping, "Round over." at the end, and a pre-round hint otherwise.
-
-Sprint 18 (2026-11-03): HUD goal line reviewer fixes (merged; spec ran in a Studio client play-test, 8 of 8 pass, not played in a live round).
-- [x] Goal line moved into its own GoalPanel under RoundInfo, same width (160–360 px), so it clears Coins/Shop on a 375 px phone.
-- [x] All HUD connections cleaned up when the gui is destroyed; spec uses a Studio-only `Hud._test.hooks(gui)` and never writes replicated State.
-
-Sprint 19 (2026-11-03): HUD goal line sprint-18 reviewer fixes (merged; spec ran in a Studio client play-test, 10 of 10 pass, not played in a live round).
-- [x] The Shift sprint binding (`HushSprint`) belongs to one HUD: a second HUD (such as a spec's) can't replace or remove it, and a destroyed owner hands it to another live HUD.
-- [x] HUD cleanup runs on gui destroy only (the PlayerRemoving hook was dropped), and the Destroying connection is tracked with the rest.
-
-Sprint 20 (2026-11-03): end-to-end round smoke spec with timing hook (merged; 17 of 17 RoundService tests pass in a one-player Studio play-test, not played in a live round).
-- [x] Studio-only `RoundService._test.setDurations` shortens Lobby/Running/Ended for specs; live lengths unchanged.
-- [x] Smoke spec runs a whole round: Lobby → Running → Ended → Lobby, escape, InRound and Escaped clearing.
-
-Sprint 21 (2026-11-03): two-player round spec with a mid-round joiner (merged; 19 of 19 RoundService tests pass in a one-player Studio play-test using Studio-only fake players, not played in a live round).
-- [x] Studio-only fake players (`RoundService._test.addFakePlayer`, `touchExit`, `removeFakePlayers`); RoundService reads players through `getPlayers()` so the loop treats fakes like real ones. Monster and NoiseService don't see fakes.
-- [x] Specs: two players run a round together, and a player joining mid-round waits as a spectator. Any RoundService warning during a test fails it.
-
-Sprint 22 (2026-11-03): round test hooks out of production, spec hardened (merged; 19 of 19 RoundService tests pass in a one-player Studio play-test, not played in a live round).
-- [x] Fake players moved to Studio-only `src/server/RoundTestPlayers.luau`; RoundService reads players through a swappable `PlayerSource` (live game always uses the default).
-- [x] Spec watches warnings via a `report()`/`_test.onWarn` hook and ScriptContext errors, not message text; fixed sleeps replaced by state waits.
-
-Sprint 23 (2026-11-03): round spec for spawn failures and fake deaths (merged; 23 of 23 RoundService tests pass in a one-player Studio play-test, not played in a live round).
-- [x] Fix: a player still spawning at the 10 s spawn timeout is dropped from the round with one warning and spectates, instead of holding the round open or appearing at Start mid-round.
-- [x] `RoundTestPlayers`: `failLoadCharacter`, `holdLoadCharacter`, `kill`, `_test.pretendLiveServer`; specs cover LoadCharacter failure, spawn timeout, a fake dying, and attach refusing on a live server.
-
-Sprint 24 (2026-11-03): sprint-23 reviewer follow-ups on RoundService (merged; 24 of 24 RoundService tests pass in a one-player Studio play-test, not played in a live round).
-- [x] A player who leaves the server while spawning is dropped from the round with its own warning; the spawn-timeout drop is commented as a gameplay fix, not a test hook.
-- [x] `RoundTestPlayers`: a held load waits on an event instead of polling every frame; spec `collectWarnings` restores the previous hook (nestable); new spec for the left-while-spawning case.
-
-Sprint 25 (2026-11-03): live round smoke in Studio (merged; no game code changed; two full one-player rounds of the real game played in Studio, nothing broke).
-- [x] Walking (10 studs/s) to the Exit stays silent, the monster stays parked, escape pays 10 coins and the round ends early; sprinting toward the Exit gets you caught.
-- [x] Clean output apart from 6 startup "ContentId rbxassetid://203785492 … Asset type does not match" warnings (engine/avatar noise, not from src/). Notes in `knowledge/scripter/live-smoke.md`.
-
-Sprint 26 (2026-11-03): two-player Studio round (merged; one real player plus a `RoundTestPlayers` fake, two full rounds, no src/ errors or warnings).
-- [x] Fake killed, real player escaped (+10, round ended early); fake added mid-round spectated; one fake escaped (+10); sprinting real player caught.
-- [x] Fix: `Escaped` now clears when the round ends, so nobody reads as escaped in the next Lobby. Notes in `knowledge/scripter/live-smoke.md`.
-
-Sprint 27 (2026-11-03): touch sprint button tested (merged; 15 of 15 Hud specs pass in Studio, 5 new; not played on a real touch device).
-- [x] Studio-only HUD hooks (`forceTouch`, `pressSprint`, `releaseSprint`, `isSprinting`) run the same press/release path as a real touch, including the Sprint remote.
-- [x] Destroying the HUD releases a held sprint, so the server isn't left sprinting.
-
-Sprint 28 (2026-11-03): 10-minute Studio soak with clean Output — failed; nothing merged, no code changed.
-- [ ] Soak not completed; see Blocked.
-
-Sprint 29 (2026-11-03): three-round Studio soak with clean Output (merged; three back-to-back real rounds in one Studio session, default durations, Output clean apart from startup prints and the 6 known ContentId warnings).
-- [x] Rounds: timeout (Running 120 s → Ended 5 s → Lobby), walk escape (+10, `Escaped` cleared at Ended → Lobby), sprinter caught by the monster.
-- [x] Fix in `src/server/Monster.luau`: a player is heard only after staying ≥ 12 studs/s for 0.5 s (`HEAR_CONFIRM`), so one brief jitter reading from a walker no longer pulls the monster onto them. New spec in `Monster.cloud.spec.luau`.
-- Balance question found (not changed): sprinting from Start drowns you (~10 s) before the monster arrives; see Next.
-
-Sprint 30 (2026-11-03): slower water so the monster punishes sprinting (merged; new `NoiseService.cloud.spec.luau`, not soaked live).
-- [x] `RISE_PER_SECOND` in `src/server/NoiseService.luau` halved from 0.6 to 0.3 studs/s at full noise.
-- [x] Confirmed in sprint 31.
-
-Sprint 31 (2026-11-04): catch-before-drown confirmed at 0.3/s (merged; two live Studio rounds, solo).
-- [x] Sprinting from Start, the monster caught the player at t≈11.7 s, z≈235–237, water ≈2.6 (root stays at y 3.43, never underwater). Drowning would need about 11.5 s of loud movement plus 2 s under.
-- [x] `NoiseService._test.setNoiseOverride` (Studio only); `NoiseService.cloud.spec.luau` checks rise ≈ 0.3 × elapsed and restores state.
+Done (history in git log):
+- [x] Sprints 1–13: hall, core systems, round loop wiring, receipt hardening (59 Monetization specs pass in Studio).
+- [x] Sprints 14–19: VIP 2x escape coins, walking silent (HEARD_SPEED 12), HUD goal line.
+- [x] Sprints 20–27: round smoke/two-player specs with fake players, live Studio rounds, Escaped clears at round end, touch sprint specs.
+- [x] Sprint 29: 0.5 s hearing confirm (`HEAR_CONFIRM`). Sprints 30–31: water 0.3/s, catch-before-drown confirmed.
+- [x] Sprint 32: 10-minute Studio soak, clean Output (no code changed).
 
 ## Needs a playtest
-- Sprint 31: catch-before-drown was confirmed with one real player in Studio only; recheck in a live multi-player server.
-- Sprint 29: the 0.5 s hearing confirm in a live multi-player server: walkers along walls/corners are never chased, sprinters still caught quickly. A full 10-minute soak is still unrun (sprint 29 ran three rounds).
-- Sprint 27: touch sprint button on a real phone/tablet: hold sprints, release (or sliding off) walks, respawn mid-hold doesn't leave you sprinting.
-- Sprints 25–26 had one real client only (Studio tools can only play solo; sprint 26 added a fake player). A true two-client run (Test → Clients and Servers, by hand) is still unplayed: Monster/NoiseService catching a second real player, join mid-round, several escapes. Also check: real player and a fake spawning at the same spot once got stuck climbing at Start.
-- Sprint 26: `Escaped` clearing at Ended → Lobby in a live server (HUD goal line resets).
-- Sprint 24: a player who leaves mid-spawn in a live server is dropped cleanly and the round starts for everyone else.
-- Sprint 23: a slow-loading player in a live server spectates that round and joins the next; `RoundTestPlayers` can't attach on a real live server (only simulated in Studio). Still open from sprint 22: warnings from main.server's RoundService instance aren't caught by the spec.
-- Full round in a live multi-player server (sprints 20–21 specs passed in Studio with one real player; sprint 21 used fake players, which Monster and NoiseService ignore): join mid-round, spectators, escape pays once.
-- HUD goal line (sprints 17–19): Shift still sprints after respawn; text follows round state and `Escaped` in a live round; check on a real phone and desktop (simulated 375x667 layout passes; screens under ~370 px would touch the Coins column).
-- Monster hearing band (sprint 16): a player at 12–14 studs/s is heard but chased after sprinters; `Monster._test` absent on a live server.
-- Walking is silent (sprint 15): a walker at 10 studs/s is never chased, a sprinter is; check the monster still feels threatening when everyone walks.
-- VIP escape pays 20 coins, non-VIP 10 (sprint 14; needs a VIP pass ID to test the real grant).
-Apart from sprint 25's one-player Studio rounds, none of these have run in a live round yet. Studio wasn't reachable in sprints 1–11; sprints 12–13 receipt specs ran in Studio (54, then 59 pass) but not in a live round.
-- Buy a product in a published place and check sprint 13: hooks absent on a live server, expired blocks pruned.
-- Buy a product in a published place and check the receipt flow (sprint 12: shared heartbeat window, done-only regrant block).
-- Run `Monetization.cloud.spec.luau` in Studio (sprint 11: 30 min heartbeat cap, one-time restamp, no regrant after give-up, hooks absent outside Studio).
-- Run `Monetization.cloud.spec.luau` (sprint 10: heartbeat, no-time restamp, 20 s drain, warn text).
-- Run `Monetization.cloud.spec.luau` (sprint 9: 24 h stale rule, retry cap, token-checked release, shutdown drain).
-- Run `SpeedSampler.spec.luau` (sprint 7: teleports hold the previous reading).
-- Run `RoundService.cloud.spec.luau`: forced failure in each start step rolls back cleanly.
-- Check a failed RoundService start retries cleanly and a started system isn't restarted.
-- Run `SpeedSampler.spec.luau`; check that walkers stay quiet and sprinters are heard.
-- Full round end to end: spectators on the platform, InRound cleared on death/escape/Ended, monster parks between rounds.
-- Run the two `.cloud.spec.luau` files.
-- Sprint/noise/water: water rises only while Running, players drown, Sprint remote works from Shift and the touch button.
-- Blind monster: hears sprinters, ignores sneakers, kills only during Running.
-- Round loop: Lobby 15 s → Running 120 s → Ended 5 s; escaping pays +10 coins once.
-- HUD and shop: bars, timer and coins update; shop opens the purchase prompts.
-- Pass grants: Neon Trail and VIP tag on spawn, Coins100 adds coins.
+- Two real clients at once (Test → Clients and Servers, by hand): second player caught/drowned, join mid-round, several escapes, slow loader spectates, leave mid-spawn; earlier stuck-at-Start spawn overlap.
+- Touch sprint button and HUD layout on a real phone/tablet (hold sprints, release walks, respawn mid-hold).
+- Purchases in a published place: VIP 20 coins, Neon Trail/VIP tag, Coins100, receipt flow; `_test` hooks absent on a live server.
+- Feel: does the monster still feel threatening when everyone walks?
 
 ## Blocked
-- Purchases: every ID in `src/shared/Products.luau` is 0. The passes and the product must be created in the Creator Hub and their IDs pasted in before they can be sold.
-- Monetization now opens its DataStore lazily, so it no longer breaks startup, but receipts still can't be tested in an unpublished Studio place. A full test needs the place published with API access turned on.
+- Purchases: every ID in `src/shared/Products.luau` is 0. Create the passes and product in the Creator Hub and paste the IDs in.
+- Receipts can't be tested in an unpublished place; needs the place published with API access on.
 
 ## Next
-- Balance: copy the sprint 30 water rate (0.3/s) into [[Balance]]; confirmed in sprint 31 that the monster catches sprinters first.
-- Write the sprint 1 numbers into [[Balance]].
+- Balance: walking nonstop for a full round ends right at the drowning line (water ~3.3–3.5 at 120 s vs root y 3.43; drowned once in sprint 32's soak). Decide whether that's intended or lower walk-noise water rise.
+- Copy the sprint 1 numbers and the 0.3/s water rate into [[Balance]].
 - Milestone 2 — Feel: footstep sounds, monster audio, water VFX, camera shake, proper hall art.
 
 ## Later

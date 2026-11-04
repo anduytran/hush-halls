@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-04 — Sprint 32: soak passed, walk-drowning logged
+- **The 10-minute Studio soak counts as passed** (670 s, six rounds, Output clean apart from the known startup lines; repeated by QA), so the checklist item is ticked. A full-round walker ending at the drowning line was logged under Next as a balance question rather than changed. Alternative considered: lowering water rise at walk noise now; deferred to keep the sprint to the soak.
+
 ## 2026-11-04 — Sprint 31: 0.3/s water rate kept
 - **The water rate stays at 0.3 studs/s**, because two live Studio rounds showed the monster catching a sprinter from Start at about 11.7 s, before they could drown. Noise can be forced in specs only through a Studio-only `_test` hook. Alternative considered: lowering the rate further; not needed.
 
