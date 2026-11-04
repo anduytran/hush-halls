@@ -139,7 +139,11 @@ Sprint 27 (2026-11-03): touch sprint button tested (merged; 15 of 15 Hud specs p
 - [x] Studio-only HUD hooks (`forceTouch`, `pressSprint`, `releaseSprint`, `isSprinting`) run the same press/release path as a real touch, including the Sprint remote.
 - [x] Destroying the HUD releases a held sprint, so the server isn't left sprinting.
 
+Sprint 28 (2026-11-03): 10-minute Studio soak with clean Output — failed; nothing merged, no code changed.
+- [ ] Soak not completed; see Blocked.
+
 ## Needs a playtest
+- Sprint 28: a 10-minute Studio soak (several rounds back to back) with Output free of project errors/warnings is still unrun.
 - Sprint 27: touch sprint button on a real phone/tablet: hold sprints, release (or sliding off) walks, respawn mid-hold doesn't leave you sprinting.
 - Sprints 25–26 had one real client only (Studio tools can only play solo; sprint 26 added a fake player). A true two-client run (Test → Clients and Servers, by hand) is still unplayed: Monster/NoiseService catching a second real player, join mid-round, several escapes. Also check: real player and a fake spawning at the same spot once got stuck climbing at Start.
 - Sprint 26: `Escaped` clearing at Ended → Lobby in a live server (HUD goal line resets).
@@ -171,6 +175,7 @@ Apart from sprint 25's one-player Studio rounds, none of these have run in a liv
 ## Blocked
 - Purchases: every ID in `src/shared/Products.luau` is 0. The passes and the product must be created in the Creator Hub and their IDs pasted in before they can be sold.
 - Monetization now opens its DataStore lazily, so it no longer breaks startup, but receipts still can't be tested in an unpublished Studio place. A full test needs the place published with API access turned on.
+- Sprint 28: the 10-minute Studio soak failed and landed nothing; retry with a shorter brief (e.g. 3 rounds) and have the scripter report the Output it saw.
 
 ## Next
 - Write the sprint 1 numbers into [[Balance]].

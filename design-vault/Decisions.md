@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 28: soak failed, nothing merged
+- **The 10-minute Studio soak failed and no code or tests landed, so the soak stays open under Blocked and Needs a playtest** rather than being marked done. Alternative considered: counting sprint 25's short rounds as the soak; rejected as they ran far under 10 minutes.
+
 ## 2026-11-03 — Sprint 27: touch sprint test hooks
 - **The touch sprint button is driven in specs through Studio-only HUD hooks that call the same press/release code as a real touch**, and unmounting the HUD releases any held sprint. Alternative considered: faking InputObjects; rejected as they can't be built from Luau.
 
