@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-04 — Sprint 33: walking can't drown you
+- **Walk noise halved from 0.1 to 0.05 (`SNEAK_NOISE` in `NoiseService.luau`)**, so a full 120 s round of walking raises the water ~1.8 studs, under the 3.43 root height; only sprinting fills the hall. Answers sprint 32's balance question. Alternative considered: lowering `RISE_PER_SECOND` again; rejected as it would also soften sprinting. Spec-tested, not yet played live.
+
 ## 2026-11-04 — Sprint 32: soak passed, walk-drowning logged
 - **The 10-minute Studio soak counts as passed** (670 s, six rounds, Output clean apart from the known startup lines; repeated by QA), so the checklist item is ticked. A full-round walker ending at the drowning line was logged under Next as a balance question rather than changed. Alternative considered: lowering water rise at walk noise now; deferred to keep the sprint to the soak.
 
