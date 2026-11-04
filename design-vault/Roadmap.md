@@ -149,10 +149,14 @@ Sprint 29 (2026-11-03): three-round Studio soak with clean Output (merged; three
 
 Sprint 30 (2026-11-03): slower water so the monster punishes sprinting (merged; new `NoiseService.cloud.spec.luau`, not soaked live).
 - [x] `RISE_PER_SECOND` in `src/server/NoiseService.luau` halved from 0.6 to 0.3 studs/s at full noise.
-- [ ] Not confirmed: a sprinter from Start is caught by the monster before drowning. See Needs a playtest.
+- [x] Confirmed in sprint 31.
+
+Sprint 31 (2026-11-04): catch-before-drown confirmed at 0.3/s (merged; two live Studio rounds, solo).
+- [x] Sprinting from Start, the monster caught the player at t≈11.7 s, z≈235–237, water ≈2.6 (root stays at y 3.43, never underwater). Drowning would need about 11.5 s of loud movement plus 2 s under.
+- [x] `NoiseService._test.setNoiseOverride` (Studio only); `NoiseService.cloud.spec.luau` checks rise ≈ 0.3 × elapsed and restores state.
 
 ## Needs a playtest
-- Sprint 30: with water at 0.3/s, sprint from Start to the Exit in Studio: the monster should catch you before you drown (sprint 29 drowned at z≈194 with 0.6/s). Also run `NoiseService.cloud.spec.luau`.
+- Sprint 31: catch-before-drown was confirmed with one real player in Studio only; recheck in a live multi-player server.
 - Sprint 29: the 0.5 s hearing confirm in a live multi-player server: walkers along walls/corners are never chased, sprinters still caught quickly. A full 10-minute soak is still unrun (sprint 29 ran three rounds).
 - Sprint 27: touch sprint button on a real phone/tablet: hold sprints, release (or sliding off) walks, respawn mid-hold doesn't leave you sprinting.
 - Sprints 25–26 had one real client only (Studio tools can only play solo; sprint 26 added a fake player). A true two-client run (Test → Clients and Servers, by hand) is still unplayed: Monster/NoiseService catching a second real player, join mid-round, several escapes. Also check: real player and a fake spawning at the same spot once got stuck climbing at Start.
@@ -187,7 +191,7 @@ Apart from sprint 25's one-player Studio rounds, none of these have run in a liv
 - Monetization now opens its DataStore lazily, so it no longer breaks startup, but receipts still can't be tested in an unpublished Studio place. A full test needs the place published with API access turned on.
 
 ## Next
-- Balance: copy the sprint 30 water rate (0.3/s) into [[Balance]]; if the playtest still shows sprinters drowning first, lower it again or widen monster hearing.
+- Balance: copy the sprint 30 water rate (0.3/s) into [[Balance]]; confirmed in sprint 31 that the monster catches sprinters first.
 - Write the sprint 1 numbers into [[Balance]].
 - Milestone 2 — Feel: footstep sounds, monster audio, water VFX, camera shake, proper hall art.
 

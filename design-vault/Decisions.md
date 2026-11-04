@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-04 — Sprint 31: 0.3/s water rate kept
+- **The water rate stays at 0.3 studs/s**, because two live Studio rounds showed the monster catching a sprinter from Start at about 11.7 s, before they could drown. Noise can be forced in specs only through a Studio-only `_test` hook. Alternative considered: lowering the rate further; not needed.
+
 ## 2026-11-03 — Sprint 30: the monster is the sprint punishment
 - **Water rise at full noise halved from 0.6 to 0.3 studs/s**, so a sprinter from Start lives long enough for the monster to reach them (answers sprint 29's balance question). Alternatives considered: widening monster hearing beyond 150 studs; not chosen, as it changes the stealth feel for everyone. Not yet confirmed in a live run.
 
