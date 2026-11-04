@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 30: the monster is the sprint punishment
+- **Water rise at full noise halved from 0.6 to 0.3 studs/s**, so a sprinter from Start lives long enough for the monster to reach them (answers sprint 29's balance question). Alternatives considered: widening monster hearing beyond 150 studs; not chosen, as it changes the stealth feel for everyone. Not yet confirmed in a live run.
+
 ## 2026-11-03 — Sprint 29: hearing needs 0.5 s of noise
 - **The monster only hears a player who stays at or above 12 studs/s for 0.5 s in a row** (`HEAR_CONFIRM` in `Monster.luau`), because the soak showed one brief jitter reading from a walker could pull the monster onto them and kill them. Sprinters (24 studs/s) are over the line the whole time, so they're still heard. Alternatives considered: raising `HEARD_SPEED` again; rejected as it would widen the silent band instead of fixing one-sample spikes. The sprint-vs-drowning balance question was logged, not changed.
 
