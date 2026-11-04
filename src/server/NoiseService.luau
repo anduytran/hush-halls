@@ -5,6 +5,7 @@
 -- changes) becomes State.Noise (0-1); while the round is Running, the water rises by
 -- Noise * RISE_PER_SECOND. An InRound player whose HumanoidRootPart stays under the water, inside
 -- its XZ footprint, for DROWN_TIME dies. The water drains when a round starts and in the lobby.
+-- RISE_PER_SECOND is 0.3 (was 0.6) so the monster, not the water, is the main sprint punishment.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -14,7 +15,7 @@ local SpeedSampler = require(script.Parent.SpeedSampler)
 local WALK_SPEED = 10
 local SPRINT_SPEED = 24
 local TICK = 0.2
-local RISE_PER_SECOND = 0.6
+local RISE_PER_SECOND = 0.3
 local DROWN_TIME = 2
 local IDLE_SPEED = 0.5 -- below this horizontal speed counts as silent
 local SNEAK_NOISE = 0.1 -- noise at full walk speed
