@@ -142,8 +142,13 @@ Sprint 27 (2026-11-03): touch sprint button tested (merged; 15 of 15 Hud specs p
 Sprint 28 (2026-11-03): 10-minute Studio soak with clean Output — failed; nothing merged, no code changed.
 - [ ] Soak not completed; see Blocked.
 
+Sprint 29 (2026-11-03): three-round Studio soak with clean Output (merged; three back-to-back real rounds in one Studio session, default durations, Output clean apart from startup prints and the 6 known ContentId warnings).
+- [x] Rounds: timeout (Running 120 s → Ended 5 s → Lobby), walk escape (+10, `Escaped` cleared at Ended → Lobby), sprinter caught by the monster.
+- [x] Fix in `src/server/Monster.luau`: a player is heard only after staying ≥ 12 studs/s for 0.5 s (`HEAR_CONFIRM`), so one brief jitter reading from a walker no longer pulls the monster onto them. New spec in `Monster.cloud.spec.luau`.
+- Balance question found (not changed): sprinting from Start drowns you (~10 s) before the monster arrives; see Next.
+
 ## Needs a playtest
-- Sprint 28: a 10-minute Studio soak (several rounds back to back) with Output free of project errors/warnings is still unrun.
+- Sprint 29: the 0.5 s hearing confirm in a live multi-player server: walkers along walls/corners are never chased, sprinters still caught quickly. A full 10-minute soak is still unrun (sprint 29 ran three rounds).
 - Sprint 27: touch sprint button on a real phone/tablet: hold sprints, release (or sliding off) walks, respawn mid-hold doesn't leave you sprinting.
 - Sprints 25–26 had one real client only (Studio tools can only play solo; sprint 26 added a fake player). A true two-client run (Test → Clients and Servers, by hand) is still unplayed: Monster/NoiseService catching a second real player, join mid-round, several escapes. Also check: real player and a fake spawning at the same spot once got stuck climbing at Start.
 - Sprint 26: `Escaped` clearing at Ended → Lobby in a live server (HUD goal line resets).
@@ -175,9 +180,9 @@ Apart from sprint 25's one-player Studio rounds, none of these have run in a liv
 ## Blocked
 - Purchases: every ID in `src/shared/Products.luau` is 0. The passes and the product must be created in the Creator Hub and their IDs pasted in before they can be sold.
 - Monetization now opens its DataStore lazily, so it no longer breaks startup, but receipts still can't be tested in an unpublished Studio place. A full test needs the place published with API access turned on.
-- Sprint 28: the 10-minute Studio soak failed and landed nothing; retry with a shorter brief (e.g. 3 rounds) and have the scripter report the Output it saw.
 
 ## Next
+- Balance (sprint 29): full-noise water (0.6/s) drowns a sprinter from Start in ~10 s, before the monster (150-stud hearing) reaches them. Decide whether drowning or the monster should be the main sprint punishment; record in [[Balance]].
 - Write the sprint 1 numbers into [[Balance]].
 - Milestone 2 — Feel: footstep sounds, monster audio, water VFX, camera shake, proper hall art.
 

@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-03 — Sprint 29: hearing needs 0.5 s of noise
+- **The monster only hears a player who stays at or above 12 studs/s for 0.5 s in a row** (`HEAR_CONFIRM` in `Monster.luau`), because the soak showed one brief jitter reading from a walker could pull the monster onto them and kill them. Sprinters (24 studs/s) are over the line the whole time, so they're still heard. Alternatives considered: raising `HEARD_SPEED` again; rejected as it would widen the silent band instead of fixing one-sample spikes. The sprint-vs-drowning balance question was logged, not changed.
+
 ## 2026-11-03 — Sprint 28: soak failed, nothing merged
 - **The 10-minute Studio soak failed and no code or tests landed, so the soak stays open under Blocked and Needs a playtest** rather than being marked done. Alternative considered: counting sprint 25's short rounds as the soak; rejected as they ran far under 10 minutes.
 
