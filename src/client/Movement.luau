@@ -7,6 +7,13 @@
 -- Keys: Q dash, C / Left Ctrl slide, Space jump. Movement.dash() and Movement.slide() are for touch buttons.
 -- Movement.onAction(fn) tells local listeners (MovementAnimator) about each move as it happens: Dash, DashJump,
 -- Slide, SlideHop, DoubleJump, WallJump and SlideEnd, with a world direction where it matters.
+-- Sprint 41 momentum: this module owns the root's horizontal velocity every frame (Quake/Source style). Ground
+-- friction slows you instead of an instant stop, the air has no drag (up to MOMENTUM_CAP) and air strafing bends
+-- the path, and a jump within HOP_WINDOW of landing skips friction (bunny hop / slide hop). The server's WalkSpeed
+-- (walk 10, sprint 24) is the speed the keys accelerate toward. Each frame the humanoid is told to move at exactly
+-- that velocity (Humanoid:Move plus WalkSpeed), so its own controller doesn't brake or fight it. The player's input
+-- is MoveDirection as the ControlModule leaves it each RenderStep (keyboard, gamepad, touch thumbstick), read in
+-- PreSimulation before this module overwrites it.
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -39,8 +46,8 @@ local SLIDE_START_MAX = 40
 local SLIDE_END_SPEED = 12
 local SLIDE_STEER = 2 -- how fast the slide turns toward the move direction
 local SLIDE_CAMERA_OFFSET = Vector3.new(0, -1.6, 0)
--- The ground controller drags a slide back to WalkSpeed, so the slide pushes harder while it is behind its
--- planned distance (per second of lag, capped at SLIDE_PUSH_MAX times the planned speed).
+-- Floor contact can drag a slide below plan, so the slide pushes harder while it is behind its planned distance
+-- (per second of lag, capped at SLIDE_PUSH_MAX times the planned speed).
 local SLIDE_CATCHUP = 10
 local SLIDE_PUSH_MAX = 1.8
 
@@ -52,8 +59,28 @@ local WALL_JUMP_UP = 46
 local WALL_JUMP_COST = 0.5 -- the first wall jump in an airtime is free
 local WALL_JUMP_COOLDOWN = 0.2
 
-local CARRY_DRAG = 12 -- studs/s lost per second while carrying momentum in the air
-local AIR_STEER = 3
+-- Momentum (sprint 41). Ground friction: speed falls at max(speed, STOP_SPEED) * GROUND_FRICTION per second. In
+-- playtests the Humanoid's own controller halves the net rate, so 7 measures about 0.5 s to stop from sprint (24)
+-- and about 0.27 s from walk (10); 4 measured 0.9 s.
+local GROUND_FRICTION = 7
+local STOP_SPEED = 10
+local GROUND_ACCEL = 12 -- the keys reach walk or sprint speed in about 0.15 s
+local AIR_ACCEL = 4 -- air strafing: the air may add speed sideways to the current velocity
+local MOMENTUM_CAP = 32 -- hops and air strafing never go above this
+local HOP_WINDOW = 0.15 -- a jump this soon after landing skips ground friction
+local CARRY_DRAG = 12 -- studs/s lost per second in the air while above MOMENTUM_CAP (a dash jump)
+-- Humanoid states where the humanoid's own movement is left alone.
+local HANDS_OFF_STATES: { [Enum.HumanoidStateType]: boolean } = {
+	[Enum.HumanoidStateType.Climbing] = true,
+	[Enum.HumanoidStateType.Seated] = true,
+	[Enum.HumanoidStateType.Swimming] = true,
+	[Enum.HumanoidStateType.PlatformStanding] = true,
+	[Enum.HumanoidStateType.FallingDown] = true,
+	[Enum.HumanoidStateType.Ragdoll] = true,
+	[Enum.HumanoidStateType.Physics] = true,
+	[Enum.HumanoidStateType.GettingUp] = true,
+	[Enum.HumanoidStateType.Dead] = true,
+}
 local LAUNCH_GRACE = 0.15 -- after a launch, touching the ground doesn't count as landing yet
 local TOUCH_JUMP_GAP = 0.15 -- JumpRequest repeats while held; a gap this long starts a new press
 
@@ -92,8 +119,13 @@ local slideStartSpeed = 0
 local slideTravelled = 0
 local slideLastPos = Vector3.zero
 
-local carry: Vector3? = nil -- horizontal velocity kept while airborne (dash jump, slide hop, wall jump)
 local lastLaunch = -math.huge
+local wasOnGround = false
+local landedAt = -math.huge -- when the root last touched down (starts the hop window)
+-- The player's input, read in a RenderStep binding right after the ControlModule's Humanoid:Move. Physics can step
+-- several times per rendered frame, and MoveDirection holds our own write between renders, so steps, dash and
+-- slide all use this copy.
+local frameWish = Vector3.zero
 local doubleJumpUsed = false
 local wallJumps = 0
 local lastWallJump = -math.huge
@@ -159,9 +191,18 @@ local function jumpSpeed(humanoid: Humanoid): number
 	return math.sqrt(2 * workspace.Gravity * humanoid.JumpHeight)
 end
 
+-- The player's move input in world space, length 0-1 (a thumbstick can be part way).
+local function readWish(current: Rig): Vector3
+	local move = flat(current.humanoid.MoveDirection)
+	if move.Magnitude > 1 then
+		move = move.Unit
+	end
+	return move
+end
+
 -- The way the player is steering, or the camera's forward when they aren't.
 local function wishDirection(current: Rig): Vector3
-	local move = flat(current.humanoid.MoveDirection)
+	local move = frameWish
 	if move.Magnitude > 0.05 then
 		return move.Unit
 	end
@@ -177,29 +218,70 @@ local function setHorizontal(root: BasePart, horizontal: Vector3)
 	root.AssemblyLinearVelocity = Vector3.new(horizontal.X, root.AssemblyLinearVelocity.Y, horizontal.Z)
 end
 
--- With a move key held, the ground controller snaps horizontal speed to MoveDirection * WalkSpeed every frame,
--- so a ground dash or slide raises WalkSpeed locally to its own speed and then gives back the server's value.
--- A WalkSpeed the server replicates mid-move (sprint toggled) becomes the value that is given back.
-local walkOverride: number? = nil
+-- The humanoid's controller pushes horizontal velocity toward MoveDirection * WalkSpeed (hard on the ground, softer
+-- in the air). drive() points that target at the velocity this module wants by writing WalkSpeed locally every
+-- frame. baseWalkSpeed is the server's value (walk or sprint) and caps how fast input alone accelerates; a value
+-- we didn't write is the server's, which the WalkSpeed signal in bindCharacter picks up.
+local writtenWalkSpeed: number? = nil
 local baseWalkSpeed = 16
 
-local function setWalkOverride(humanoid: Humanoid, speed: number?)
-	if speed then
-		if walkOverride == nil then
-			baseWalkSpeed = humanoid.WalkSpeed
-		end
-		walkOverride = speed
+local function writeWalkSpeed(humanoid: Humanoid, speed: number)
+	if math.abs(humanoid.WalkSpeed - speed) > 1e-3 then
+		writtenWalkSpeed = speed
 		humanoid.WalkSpeed = speed
-	elseif walkOverride ~= nil then
-		walkOverride = nil
-		humanoid.WalkSpeed = baseWalkSpeed
 	end
+end
+
+-- The controller treats Move as a direction (a short vector still runs at full WalkSpeed), so the speed goes in
+-- WalkSpeed and Move gets the unit direction. Its target is then exactly `horizontal`.
+-- The last direction drive() gave; the RenderStep binding puts it back after the ControlModule's own Move.
+local drivenMove: Vector3? = nil
+
+local function drive(humanoid: Humanoid, horizontal: Vector3)
+	local speed = horizontal.Magnitude
+	if speed < 0.05 then
+		writeWalkSpeed(humanoid, baseWalkSpeed)
+		drivenMove = Vector3.zero
+		humanoid:Move(Vector3.zero, false)
+		return
+	end
+	writeWalkSpeed(humanoid, speed)
+	drivenMove = horizontal / speed
+	humanoid:Move(horizontal / speed, false)
 end
 
 local function launch(root: BasePart, horizontal: Vector3, up: number)
 	root.AssemblyLinearVelocity = Vector3.new(horizontal.X, up, horizontal.Z)
-	carry = horizontal
 	lastLaunch = os.clock()
+end
+
+-- Quake-style acceleration: add speed along wishDir until the velocity's part along it reaches wishSpeed.
+local function accelerate(velocity: Vector3, wishDir: Vector3, wishSpeed: number, accel: number, dt: number): Vector3
+	if wishSpeed <= 0 then
+		return velocity
+	end
+	local add = wishSpeed - velocity:Dot(wishDir)
+	if add <= 0 then
+		return velocity
+	end
+	return velocity + wishDir * math.min(accel * wishSpeed * dt, add)
+end
+
+local function applyFriction(velocity: Vector3, dt: number): Vector3
+	local speed = velocity.Magnitude
+	if speed < 0.05 then
+		return Vector3.zero
+	end
+	local newSpeed = math.max(0, speed - math.max(speed, STOP_SPEED) * GROUND_FRICTION * dt)
+	return velocity * (newSpeed / speed)
+end
+
+local function capSpeed(velocity: Vector3, cap: number): Vector3
+	local speed = velocity.Magnitude
+	if speed > cap then
+		return velocity * (cap / speed)
+	end
+	return velocity
 end
 
 local function endSlide(current: Rig?)
@@ -209,7 +291,6 @@ local function endSlide(current: Rig?)
 	sliding = false
 	if current then
 		current.humanoid.CameraOffset = Vector3.zero
-		setWalkOverride(current.humanoid, nil)
 	end
 end
 
@@ -217,7 +298,8 @@ local function resetMoves()
 	dashing = false
 	airDashUsed = false
 	sliding = false
-	carry = nil
+	wasOnGround = false
+	landedAt = -math.huge
 	doubleJumpUsed = false
 	wallJumps = 0
 end
@@ -262,7 +344,6 @@ function Movement.dash()
 	if sliding then
 		endSlide(current)
 	end
-	carry = nil
 	dashing = true
 	dashInAir = not grounded
 	dashStart = os.clock()
@@ -286,7 +367,6 @@ function Movement.slide()
 		return
 	end
 	dashing = false
-	carry = nil
 	sliding = true
 	slideStart = os.clock()
 	slideDir = velocity.Unit
@@ -331,8 +411,8 @@ local function onJumpPress()
 
 	if isGrounded(humanoid) then
 		if sliding then
-			-- Slide hop: the humanoid does the jump, the slide's speed is carried through the air.
-			carry = slideDir * slideSpeed(now)
+			-- Slide hop: the humanoid does the jump, the slide's speed (up to MOMENTUM_CAP) is kept in the air.
+			setHorizontal(root, slideDir * math.min(slideSpeed(now), MOMENTUM_CAP))
 			lastLaunch = now
 			endSlide(current)
 			emit("SlideHop", slideDir)
@@ -362,6 +442,35 @@ local function onJumpPress()
 	end
 end
 
+-- Walking, running, hopping and falling: friction on the ground, none in the air, keys accelerate toward the
+-- server's WalkSpeed. It starts from the root's real velocity, so walls and props still stop you.
+local function momentum(humanoid: Humanoid, root: BasePart, onGround: boolean, now: number, dt: number)
+	local velocity = flat(root.AssemblyLinearVelocity)
+	local wish = frameWish
+	local amount = wish.Magnitude
+	local wishDir = if amount > 1e-3 then wish / amount else Vector3.zero
+	local wishSpeed = baseWalkSpeed * amount
+	if onGround then
+		if now - landedAt < HOP_WINDOW then
+			-- Just landed: no friction yet, so a jump now keeps the speed (bunny hop), up to the cap.
+			velocity = capSpeed(velocity, MOMENTUM_CAP)
+		else
+			velocity = applyFriction(velocity, dt)
+		end
+		velocity = accelerate(velocity, wishDir, wishSpeed, GROUND_ACCEL, dt)
+	else
+		local before = velocity.Magnitude
+		if before > MOMENTUM_CAP then
+			velocity *= math.max(MOMENTUM_CAP, before - CARRY_DRAG * dt) / before
+			before = velocity.Magnitude
+		end
+		-- Air strafing: the keys can turn the velocity and add a little, never past max(speed before, cap).
+		velocity = capSpeed(accelerate(velocity, wishDir, wishSpeed, AIR_ACCEL, dt), math.max(before, MOMENTUM_CAP))
+	end
+	setHorizontal(root, velocity)
+	drive(humanoid, velocity)
+end
+
 local function step(dt: number)
 	local now = os.clock()
 	if stamina < MAX_STAMINA and now - lastSpend >= REGEN_DELAY then
@@ -376,20 +485,32 @@ local function step(dt: number)
 	local humanoid, root = current.humanoid, current.root
 	local grounded = isGrounded(humanoid)
 
-	if grounded and now - lastLaunch > LAUNCH_GRACE then
+	local onGround = grounded and now - lastLaunch > LAUNCH_GRACE
+	if onGround then
 		airDashUsed = false
 		doubleJumpUsed = false
 		wallJumps = 0
-		carry = nil
+		if not wasOnGround then
+			landedAt = now
+		end
+	end
+	wasOnGround = onGround
+
+	if HANDS_OFF_STATES[humanoid:GetState()] then
+		-- Ladders, seats, ragdolls: the humanoid moves itself at the server's WalkSpeed.
+		dashing = false
+		endSlide(current)
+		writeWalkSpeed(humanoid, baseWalkSpeed)
+		drivenMove = nil
+		return
 	end
 
-	local override: number? = nil -- WalkSpeed to hold this frame (ground dash and slide)
 	if dashing then
 		if now - dashStart >= DASH_TIME then
 			dashing = false
 			setHorizontal(root, dashDir * DASH_EXIT_SPEED)
+			drive(humanoid, dashDir * DASH_EXIT_SPEED)
 			if not grounded then
-				carry = dashDir * DASH_EXIT_SPEED
 				lastLaunch = now
 			end
 		else
@@ -398,15 +519,12 @@ local function step(dt: number)
 			local speed = math.clamp((DASH_DISTANCE - travelled) / timeLeft, DASH_SPEED_MIN, DASH_SPEED_MAX)
 			local y = if dashInAir then 0 else root.AssemblyLinearVelocity.Y
 			root.AssemblyLinearVelocity = dashDir * speed + Vector3.new(0, y, 0)
-			if grounded then
-				override = speed
-			end
+			drive(humanoid, dashDir * speed)
 		end
 	elseif sliding then
 		local speed = slideSpeed(now)
-		-- Progress comes from positions, like the dash: the velocity read back here is not what the ground
-		-- controller left after braking (with no move key held it brakes hard), so it hid the slide's lag and
-		-- the slide ended as "blocked" a few frames after it started.
+		-- Progress comes from positions, like the dash: the velocity read back can lag what floor contact left,
+		-- which once hid the slide's lag and ended it as "blocked" a few frames after it started.
 		local moved = flat(root.Position - slideLastPos).Magnitude
 		slideLastPos = root.Position
 		local actual = if dt > 0 then moved / dt else speed
@@ -415,13 +533,21 @@ local function step(dt: number)
 		local blocked = now - slideStart > 0.1 and actual < speed * 0.4 -- ran into something
 		if grounded and (finished or blocked) then
 			endSlide(current)
+			momentum(humanoid, root, onGround, now, dt)
 		elseif not grounded then
-			-- Sliding off a ledge keeps the speed in the air.
-			carry = slideDir * speed
+			-- Sliding off a ledge keeps the speed in the air; jumping out of it (Space is handled in onJumpPress,
+			-- this catches the touch button and Humanoid.Jump) is a slide hop, capped like every hop.
+			local hop = humanoid:GetState() == Enum.HumanoidStateType.Jumping
+			local kept = slideDir * (if hop then math.min(speed, MOMENTUM_CAP) else speed)
 			lastLaunch = now
 			endSlide(current)
+			if hop then
+				emit("SlideHop", slideDir)
+			end
+			setHorizontal(root, kept)
+			drive(humanoid, kept)
 		else
-			local wish = flat(humanoid.MoveDirection)
+			local wish = frameWish
 			if wish.Magnitude > 0.05 then
 				local turned = slideDir:Lerp(wish.Unit, math.min(1, SLIDE_STEER * dt))
 				if turned.Magnitude > 0.05 then
@@ -431,31 +557,11 @@ local function step(dt: number)
 			local lag = slidePlanned(now) - slideTravelled
 			local push = math.clamp(speed + lag * SLIDE_CATCHUP, speed, speed * SLIDE_PUSH_MAX)
 			setHorizontal(root, slideDir * push)
-			override = push
+			drive(humanoid, slideDir * push)
 		end
 	else
-		setWalkOverride(humanoid, nil) -- the carry check below compares against the real WalkSpeed
-		local kept = carry
-		if kept then
-			local actual = flat(root.AssemblyLinearVelocity).Magnitude
-			local speed = kept.Magnitude - CARRY_DRAG * dt
-			if speed <= humanoid.WalkSpeed or (now - lastLaunch > 0.1 and actual < kept.Magnitude * 0.5) then
-				carry = nil -- slowed to walking pace, or hit something
-			else
-				local direction = kept.Unit
-				local wish = flat(humanoid.MoveDirection)
-				if wish.Magnitude > 0.05 then
-					local turned = direction:Lerp(wish.Unit, math.min(1, AIR_STEER * dt))
-					if turned.Magnitude > 0.05 then
-						direction = turned.Unit
-					end
-				end
-				carry = direction * speed
-				setHorizontal(root, direction * speed)
-			end
-		end
+		momentum(humanoid, root, onGround, now, dt)
 	end
-	setWalkOverride(humanoid, override)
 end
 
 local function bindCharacter(character: Model)
@@ -468,16 +574,19 @@ local function bindCharacter(character: Model)
 		return
 	end
 	resetMoves()
-	walkOverride = nil
+	writtenWalkSpeed = nil
+	drivenMove = nil
+	frameWish = Vector3.zero
+	baseWalkSpeed = humanoid.WalkSpeed
 	stamina = MAX_STAMINA
 	lastSpend = -math.huge
 	publishStamina()
 	rig = { character = character, humanoid = humanoid, root = root }
 	humanoid:GetPropertyChangedSignal("WalkSpeed"):Connect(function()
-		-- A value we didn't write is the server's (sprint on or off); give that one back after the move.
+		-- A value we didn't write is the server's (sprint on or off): the speed the keys aim for.
 		-- Signals can be deferred, so this compares against what we wrote rather than using a flag.
-		local written = walkOverride
-		if written ~= nil and math.abs(humanoid.WalkSpeed - written) > 1e-3 then
+		local written = writtenWalkSpeed
+		if written == nil or math.abs(humanoid.WalkSpeed - written) > 1e-3 then
 			baseWalkSpeed = humanoid.WalkSpeed
 		end
 	end)
@@ -544,6 +653,16 @@ function Movement.start()
 		end
 	end)
 
+	-- Bound after the ControlModule (Input priority) so this reads the Humanoid:Move it just made.
+	RunService:BindToRenderStep("MovementWish", Enum.RenderPriority.Input.Value + 1, function()
+		local current = aliveRig()
+		frameWish = if current then readWish(current) else Vector3.zero
+		-- The ControlModule's Move would otherwise reach physics on rendered frames and brake the momentum.
+		if current and drivenMove then
+			current.humanoid:Move(drivenMove, false)
+		end
+	end)
+	-- PreSimulation runs after the ControlModule's RenderStep Humanoid:Move, so drive() has the last word.
 	RunService.PreSimulation:Connect(step)
 
 	player.CharacterAdded:Connect(bindCharacter)

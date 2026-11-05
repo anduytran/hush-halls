@@ -72,12 +72,16 @@ local LUNGE_BONUS = 8 -- extra studs/s while lunging
 -- Sprint 39: the school is ~1.7x longer, with five cross halls and four link rooms between the back corridor
 -- and the main hall. Each cross hall and link room gets a small area down its middle (link rooms: the door
 -- lane, clear of the desks), so it patrols every part of the map.
-type Area = { name: string, x0: number, x1: number, z0: number, z1: number }
+-- Sprint 41: HallA and BackCorridor run south to z -130; the courtyard (east of the tree and west of the ramps)
+-- and the second floor (y = its floor height, 21; clear of its east-wall lockers) are patrolled too.
+type Area = { name: string, x0: number, x1: number, z0: number, z1: number, y: number? }
 local PATROL_AREAS: { Area } = {
-	{ name = "HallA", x0 = -8, x1 = 8, z0 = 4, z1 = 166 },
+	{ name = "HallA", x0 = -8, x1 = 8, z0 = -126, z1 = 166 },
 	{ name = "HallB", x0 = 4, x1 = 20, z0 = 174, z1 = 336 },
 	{ name = "HallC", x0 = -8, x1 = 8, z0 = 344, z1 = 490 },
-	{ name = "BackCorridor", x0 = -36, x1 = -32, z0 = 4, z1 = 486 },
+	{ name = "BackCorridor", x0 = -36, x1 = -32, z0 = -126, z1 = 486 },
+	{ name = "Courtyard", x0 = -78, x1 = -60, z0 = -124, z1 = 164 },
+	{ name = "Upstairs", x0 = -38, x1 = -35, z0 = -124, z1 = 164, y = 21 },
 	{ name = "Gym", x0 = -66, x1 = -46, z0 = 394, z1 = 454 },
 	{ name = "CrossHall1", x0 = -22, x1 = -18, z0 = 24, z1 = 28 },
 	{ name = "CrossHall2", x0 = -22, x1 = -18, z0 = 114, z1 = 118 },
@@ -262,12 +266,22 @@ local function flatDistance(a: Vector3, b: Vector3): number
 	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
 end
 
+-- Sprint 41: flat distance, but infinite between floors (the second floor sits right over the back corridor).
+local function levelDistance(a: Vector3, b: Vector3): number
+	if math.abs(a.Y - b.Y) > SIZE then
+		return math.huge
+	end
+	return flatDistance(a, b)
+end
+
 -- A random standing spot in a random PATROL_AREAS entry, at least PATROL_MIN_LEG from `from` when it can.
+-- An area's optional `y` is its floor height (the second floor).
 local function patrolPoint(from: Vector3, rng: Random): Vector3
 	local point = from
 	for _ = 1, PATROL_PICK_TRIES do
 		local area = PATROL_AREAS[rng:NextInteger(1, #PATROL_AREAS)]
-		point = onFloor(Vector3.new(rng:NextNumber(area.x0, area.x1), 0, rng:NextNumber(area.z0, area.z1)))
+		local x, z = rng:NextNumber(area.x0, area.x1), rng:NextNumber(area.z0, area.z1)
+		point = onFloor(Vector3.new(x, 0, z)) + Vector3.new(0, area.y or 0, 0)
 		if flatDistance(point, from) >= PATROL_MIN_LEG then
 			break
 		end
@@ -521,6 +535,10 @@ local function run(hall: Instance)
 		params.FilterType = Enum.RaycastFilterType.Exclude
 		params.FilterDescendantsInstances = ignore
 		params.RespectCanCollide = true
+		-- Sprint 41: a goal on the other floor is never a straight line, even if it is directly overhead
+		if math.abs(goal.Y - from.Y) > SIZE then
+			return false
+		end
 		local direction = Vector3.new(goal.X, from.Y, goal.Z) - from
 		return workspace:Raycast(from, direction, params) == nil
 	end
@@ -530,7 +548,7 @@ local function run(hall: Instance)
 	-- the line is clear. Patrol passes allowDirect = false and picks another point instead.
 	local function navigate(goal: Vector3, speed: number, dt: number, now: number, allowDirect: boolean): boolean
 		local position = body.Position
-		if flatDistance(position, goal) <= ARRIVE_DISTANCE then
+		if levelDistance(position, goal) <= ARRIVE_DISTANCE then
 			return true
 		end
 		if shouldRepath(now, lastCompute, pathAim, goal, pathFailed) then
@@ -548,7 +566,7 @@ local function run(hall: Instance)
 		end
 		while waypointIndex <= #points do
 			local point = points[waypointIndex] + Vector3.new(0, SIZE / 2, 0)
-			if flatDistance(position, point) <= ARRIVE_DISTANCE then
+			if levelDistance(position, point) <= ARRIVE_DISTANCE then
 				waypointIndex += 1
 			else
 				moveToward(body, point, speed, dt)
@@ -559,7 +577,7 @@ local function run(hall: Instance)
 		if hasClearLine(position, goal) then
 			return moveToward(body, goal, speed, dt)
 		end
-		if flatDistance(position, goal) <= PATH_END_SLACK then
+		if levelDistance(position, goal) <= PATH_END_SLACK then
 			return true
 		end
 		pathAim = nil -- ask for a fresh path at the next allowed time
@@ -623,7 +641,8 @@ local function run(hall: Instance)
 			listenUntil = nil -- hearing someone ends a listen pause at once
 			lastHeard = target
 			setMode("chase", now)
-			local distance = flatDistance(body.Position, target)
+			-- Sprint 41: 3D, so a player on the balcony right above it is not "in lunge range"
+			local distance = (body.Position - target).Magnitude
 			navigate(target, chaseSpeed(level, distance), dt, now, true)
 			return if distance <= LUNGE_RANGE then "Lunge" else "Chase"
 		end

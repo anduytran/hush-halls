@@ -39,6 +39,23 @@ Procedural (Motor6D `Transform` on R15 and R6), with no uploaded animation asset
 
 Implementation: `src/client/MovementAnimator.luau` handles both Motor6Ds and AnimationConstraints (this place's avatars use AnimationConstraints). `Movement.onAction(fn)` reports the local player's moves, and the server sets `MoveAction`/`MoveActionAt` on the character for other players.
 
+## Momentum (sprint 41) — acceptance criteria
+Speed is kept, CS/Deadlock style: letting go of W no longer stops you dead.
+- [x] Ground: releasing all move keys decelerates with friction (from 24 to about 0 in roughly 0.5 s at sprint speed; from walk speed in 0.25 s), not instantly. Changing direction carries speed over. (measured 0.52 s and 0.28 s)
+- [x] Air: no deceleration in the air; holding A/D while turning the camera air-strafes (it bends the path and can add a little speed, capped at 32 studs/s). (air speed held; the strafe gain wasn't measured)
+- [x] Bunny hop and slide hop: jumping within 0.15 s of landing keeps the horizontal speed (no ground friction that frame). Chained hops cap at 32 studs/s. (3 hops held 24.0; slide hop 24.3)
+- [x] Reward: a dash, slide or hop chain keeps you faster than sprinting without spending more stamina. Momentum speed above 18 is loud: the noise rule stays. (the dash carries into sprint; the slide starts at 29.9)
+- [ ] The default walk and sprint still feel normal on the ground; touch controls (thumbstick) work; no Output errors; checks pass. (checks and Output OK; feel and thumbstick need a hand test)
+
+Implementation: `Movement.luau` sets the horizontal velocity in PreSimulation (GROUND_FRICTION 7, a 32 cap, 0.15 s without friction after landing). A `MovementWish` render-step binding reads the input after the default control script.
+
+## Bigger school: courtyard and second floor (sprint 41) — acceptance criteria
+- [x] An open-air courtyard in the middle (grass, paths, a dead tree, benches and low walls), joined to the halls by at least 3 doorways. It's lit by moonlight, so it's brighter but exposed. (x -100..-42, west of the back hall; three 12×15 doorways)
+- [x] A second floor over part of the school: at least 2 staircases and a broken railing or balcony where you can drop down to the courtyard. The water stays on the ground floor, so the second floor is dry but a longer way round. (a balcony at Y 21, two 60-stud ramps, 3 railing gaps)
+- [x] The exits stay on the ground floor. The shortest walk from every spawn to every exit is 550–700 studs; at least one spawn is upstairs. (592–659; Start4 is upstairs, Start3 in the courtyard)
+- [ ] The monster can path up the stairs and through the courtyard; its patrol points cover both. (paths up and down succeed and the patrol has Courtyard/Upstairs areas; the real monster wasn't seen climbing)
+- [x] Part count under 3,200 (use big parts); no Output errors; checks pass. (2,900–2,901)
+
 ## Status (sprint 39)
 Built; checks pass. Fixes after QA: the wall jump treated the first airborne frames as grounded, and the slide cancelled itself at once. Both now work. `MovementNoise.cloud.spec.luau` passes 6/6.
 

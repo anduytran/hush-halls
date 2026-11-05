@@ -321,10 +321,11 @@ return {
 		local origin = Vector3.new(0, 3, 50)
 		for _ = 1, 300 do
 			local p = test.patrolPoint(origin, rng)
-			assert(p.Y == test.STANDING_Y, "patrol point should be at standing height, got " .. p.Y)
 			local inside = false
 			for _, a in test.PATROL_AREAS do
-				if p.X >= a.x0 and p.X <= a.x1 and p.Z >= a.z0 and p.Z <= a.z1 then
+				-- Sprint 41: an area's optional y is its floor height (the second floor is right over the corridor)
+				local onLevel = p.Y == test.STANDING_Y + (a.y or 0)
+				if onLevel and p.X >= a.x0 and p.X <= a.x1 and p.Z >= a.z0 and p.Z <= a.z1 then
 					inside = true
 					seen[a.name] = true
 				end

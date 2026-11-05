@@ -29,6 +29,15 @@
 -- middle segment, through the classroom row) and four link classrooms join the two corridors. Three classrooms
 -- per segment. The gym (z 390..466) and both extra exits moved north, so the shortest walk from every Hall.Starts
 -- spawn to every exit is 420..520 studs, and every spawn is far from the monster's entry at the main Exit.
+-- Sprint 41 (courtyard and second floor): the main hall's segment A and the back corridor both run 120 studs
+-- further south (to z -130), and all four spawns moved to that south end, so the shortest walk from every spawn
+-- to every exit is 550..700. West of the back corridor is an open-air courtyard (x -100..-42, z -130..170) with
+-- grass, stone paths, a dead tree in a planter, benches and low walls, lit by a moonlight SurfaceLight. Three
+-- 12x15 doorways in the back corridor's west wall join it to the halls. Above the back corridor is a dry second
+-- floor (the ceiling slab, top at UPPER_Y) whose west side is a balcony with a broken railing over the courtyard,
+-- so you can drop down. Two ramps (12 wide, 21 up over 60, about 19 degrees) climb from the courtyard to it.
+-- Start4 is upstairs. The courtyard walls are 40 tall with an invisible cap on top, so nobody climbs out.
+-- The ceiling is now two parts (school and gym) so the courtyard is open to the sky. Exits are unchanged.
 -- The comments above give the Sprint 36 numbers; the constants below are the current ones.
 
 local CollectionService = game:GetService("CollectionService")
@@ -79,7 +88,8 @@ local PLANK_SIZE = Vector3.new(3, 0.3, 8) -- slightly raised; low enough to step
 
 -- Sprint 36 routes (see the header). Interiors are given; walls are WALL_THICKNESS outside them.
 local BACK_X0, BACK_X1 = -40, -28 -- back corridor
-local BACK_Z0, BACK_Z1 = 0, 490
+local SOUTH_Z = -130 -- Sprint 41: south end of the main hall and the back corridor (was -10 and 0)
+local BACK_Z0, BACK_Z1 = SOUTH_Z, 490
 local LINK_X0, LINK_X1 = -26, -14 -- cross halls and link classrooms, between the two corridors
 local GYM_X0, GYM_X1 = -70, -42
 local GYM_Z0, GYM_Z1 = 390, 466
@@ -99,6 +109,33 @@ local LINK_ROOMS: { LinkRoom } = {
 }
 local WINDOW_X0, WINDOW_X1 = -23, -17 -- broken window in the window room's north wall
 local WINDOW_SILL, WINDOW_TOP = 3, 9
+
+-- Sprint 41: courtyard and second floor (see the header). Interiors are given; walls are outside them.
+local COURT_X0, COURT_X1 = -100, -42 -- the east side is BackHallWest (x -42..-40)
+local COURT_Z0, COURT_Z1 = SOUTH_Z, 170
+local COURT_WALL_HEIGHT = 40 -- the invisible SkyCap sits right on top, so nobody stands on a wall top
+local COURT_DOORS = { -15, 30, 70 } -- doorway centres (z) in BackHallWest
+local COURT_DOOR_HALF = 6 -- 12 wide, up to CROSS_TOP
+local UPPER_Y = WALL_HEIGHT + 1 -- second-floor walking height: the top of the ceiling slab
+local UPPER_TOP = COURT_WALL_HEIGHT -- the second floor's roof underside
+local UPPER_X0, UPPER_X1 = -42, -28 -- second-floor corridor; open balcony edge at x0, wall at x1..x1 + 2
+local UPPER_Z0, UPPER_Z1 = SOUTH_Z, COURT_Z1
+local STAIR_X0, STAIR_X1 = -54, -42 -- ramps and landings run along the courtyard's east wall
+-- Each staircase: a solid landing (top at UPPER_Y, touching the balcony) and a wedge ramp down to the courtyard.
+type Stair = { landing0: number, landing1: number, ramp0: number, ramp1: number, highNorth: boolean }
+local STAIRS: { Stair } = {
+	{ landing0 = -104, landing1 = -90, ramp0 = -90, ramp1 = -30, highNorth = false },
+	{ landing0 = 150, landing1 = 164, ramp0 = 90, ramp1 = 150, highNorth = true },
+}
+-- The railing gap at each landing also runs this far along the top of the ramp: a 14-wide gap alone was too
+-- narrow for PathfindingService (agent radius 3) to join the landing to the balcony.
+local LANDING_GAP_OVER_RAMP = 10
+local RAIL_GAPS = { { -4, 8 }, { 40, 52 }, { 110, 118 } } -- broken railing spans (the landings are gaps too)
+local GRASS = Color3.fromRGB(58, 66, 42)
+local STONE = Color3.fromRGB(96, 96, 92)
+local BRICK = Color3.fromRGB(92, 58, 48)
+local BARK = Color3.fromRGB(52, 42, 36)
+local MOON = Color3.fromRGB(150, 175, 230)
 
 export type Obstacle = { kind: "Pillar" | "Crate", x: number, z: number, size: number? }
 export type Layout = {
@@ -677,12 +714,12 @@ function HallBuilder.build(): Model
 
 	local half = WIDTH / 2 -- 12
 	local t = WALL_THICKNESS
-	local backZ = -10 -- a little room behind the spawn
+	local backZ = SOUTH_Z -- Sprint 41: segment A runs 120 studs further south, past the spawns
 	local turn1 = TURN1
 	local turn2 = TURN2
-	local minX = GYM_X0 - t -- the gym is the west edge of the footprint
+	local minX = COURT_X0 - t -- the courtyard is the west edge of the footprint
 
-	-- Floor covers every segment, the back corridor, the link rooms and the gym; its top sits at Y=0.
+	-- Floor covers every segment, the back corridor, the link rooms, the gym and the courtyard; its top sits at Y=0.
 	-- NoiseService sizes the water from this one part, so it must stay a single box over the whole footprint.
 	local floor = box(
 		hall,
@@ -754,7 +791,13 @@ function HallBuilder.build(): Model
 		BACK_X0,
 		BACK_Z0 - t,
 		BACK_Z1 + t,
-		{ { GYM_DOOR[1], GYM_DOOR[2], CROSS_TOP } }
+		(function()
+			local openings: { Opening } = { { GYM_DOOR[1], GYM_DOOR[2], CROSS_TOP } }
+			for _, z in COURT_DOORS do
+				table.insert(openings, { z - COURT_DOOR_HALF, z + COURT_DOOR_HALF, CROSS_TOP })
+			end
+			return openings
+		end)()
 	)
 	wall(walls, "BackHallSouth", BACK_X0 - t, LINK_X0, BACK_Z0 - t, BACK_Z0)
 	wall(walls, "BackHallNorth", BACK_X0 - t, LINK_X0, BACK_Z1, BACK_Z1 + t)
@@ -800,15 +843,113 @@ function HallBuilder.build(): Model
 	wall(walls, "GymNorth", GYM_X0 - t, GYM_X1, GYM_Z1, GYM_Z1 + t)
 	wall(walls, "GymWest", GYM_X0 - t, GYM_X0, GYM_Z0 - t, GYM_Z1 + t)
 
-	-- The ceiling closes the whole footprint at WALL_HEIGHT.
+	-- The ceiling closes the school at WALL_HEIGHT (its top is the second floor's floor over the back corridor);
+	-- the gym has its own slab, and the courtyard is open to the sky.
 	box(
 		hall,
 		"Ceiling",
-		Vector3.new(minX, WALL_HEIGHT, backZ - t),
-		Vector3.new(half + STEP + t, WALL_HEIGHT + 1, LENGTH + t),
+		Vector3.new(BACK_X0 - t, WALL_HEIGHT, backZ - t),
+		Vector3.new(half + STEP + t, UPPER_Y, LENGTH + t),
 		CEILING_COLOR,
 		Enum.Material.Plaster
 	)
+	box(
+		hall,
+		"GymCeiling",
+		Vector3.new(GYM_X0 - t, WALL_HEIGHT, GYM_Z0 - t),
+		Vector3.new(BACK_X0 - t, UPPER_Y, GYM_Z1 + t),
+		CEILING_COLOR,
+		Enum.Material.Plaster
+	)
+
+	-- Sprint 41: the courtyard's outer walls (tall, so wall jumps can't reach the top) and an invisible cap.
+	local function tallBox(name: string, x0: number, x1: number, y0: number, y1: number, z0: number, z1: number)
+		return box(walls, name, Vector3.new(x0, y0, z0), Vector3.new(x1, y1, z1), BRICK, Enum.Material.Brick)
+	end
+	tallBox("CourtWest", COURT_X0 - t, COURT_X0, 0, COURT_WALL_HEIGHT, COURT_Z0 - t, COURT_Z1 + t)
+	tallBox("CourtSouth", COURT_X0 - t, BACK_X0 - t, 0, COURT_WALL_HEIGHT, COURT_Z0 - t, COURT_Z0)
+	tallBox("CourtNorth", COURT_X0 - t, BACK_X0 - t, 0, COURT_WALL_HEIGHT, COURT_Z1, COURT_Z1 + t)
+	local skyCap = box(
+		walls,
+		"SkyCap",
+		Vector3.new(COURT_X0 - t, COURT_WALL_HEIGHT, COURT_Z0 - t),
+		Vector3.new(UPPER_X0, COURT_WALL_HEIGHT + 1, COURT_Z1 + t),
+		CEILING_COLOR,
+		Enum.Material.SmoothPlastic
+	)
+	skyCap.Transparency = 1
+	skyCap.CastShadow = false
+	box(
+		hall,
+		"UpperCeiling",
+		Vector3.new(UPPER_X0, UPPER_TOP, UPPER_Z0 - t),
+		Vector3.new(UPPER_X1 + t, UPPER_TOP + 1, UPPER_Z1 + t),
+		CEILING_COLOR,
+		Enum.Material.Plaster
+	)
+
+	-- The second floor over the back corridor (x -42..-28, z UPPER_Z0..UPPER_Z1, floor at UPPER_Y). Its east and
+	-- end walls stand on the ceiling; the west side is the open balcony over the courtyard. The SkyCap is its roof.
+	tallBox("UpperEast", UPPER_X1, UPPER_X1 + t, UPPER_Y, UPPER_TOP, UPPER_Z0 - t, UPPER_Z1 + t)
+	tallBox("UpperSouth", UPPER_X0, UPPER_X1, UPPER_Y, UPPER_TOP, UPPER_Z0 - t, UPPER_Z0)
+	tallBox("UpperNorth", UPPER_X0, UPPER_X1, UPPER_Y, UPPER_TOP, UPPER_Z1, UPPER_Z1 + t)
+
+	-- Two staircases: a solid landing level with the balcony and a 12-wide wedge ramp (about 19 degrees) down.
+	for i, s in STAIRS do
+		box(
+			walls,
+			`StairLanding{i}`,
+			Vector3.new(STAIR_X0, 0, s.landing0),
+			Vector3.new(STAIR_X1, UPPER_Y, s.landing1),
+			STONE,
+			Enum.Material.Concrete
+		)
+		local ramp = Instance.new("WedgePart")
+		ramp.Name = `StairRamp{i}`
+		ramp.Anchored = true
+		ramp.Size = Vector3.new(STAIR_X1 - STAIR_X0, UPPER_Y, s.ramp1 - s.ramp0)
+		-- a WedgePart is tallest at its local +Z (back) end
+		local centre = Vector3.new((STAIR_X0 + STAIR_X1) / 2, UPPER_Y / 2, (s.ramp0 + s.ramp1) / 2)
+		ramp.CFrame = CFrame.new(centre) * (if s.highNorth then CFrame.identity else CFrame.Angles(0, math.pi, 0))
+		ramp.Color = STONE
+		ramp.Material = Enum.Material.Concrete
+		ramp.TopSurface = Enum.SurfaceType.Smooth
+		ramp.BottomSurface = Enum.SurfaceType.Smooth
+		ramp.Parent = walls
+	end
+
+	-- The broken balcony railing along x UPPER_X0: posts and rail runs with gaps where it has fallen away and at
+	-- both landings, so a player can drop (or be chased) down into the courtyard.
+	local railGaps: { { number } } = table.clone(RAIL_GAPS)
+	for _, s in STAIRS do
+		if s.highNorth then
+			table.insert(railGaps, { s.landing0 - LANDING_GAP_OVER_RAMP, s.landing1 })
+		else
+			table.insert(railGaps, { s.landing0, s.landing1 + LANDING_GAP_OVER_RAMP })
+		end
+	end
+	table.sort(railGaps, function(p, q)
+		return p[1] < q[1]
+	end)
+	local railZ = UPPER_Z0
+	local function railRun(z0: number, z1: number)
+		if z1 - z0 < 1 then
+			return
+		end
+		box(
+			walls,
+			"BalconyRail",
+			Vector3.new(UPPER_X0, UPPER_Y, z0),
+			Vector3.new(UPPER_X0 + 0.5, UPPER_Y + 3.5, z1),
+			WOOD_DARK,
+			Enum.Material.Wood
+		)
+	end
+	for _, g in railGaps do
+		railRun(railZ, g[1])
+		railZ = math.max(railZ, g[2])
+	end
+	railRun(railZ, UPPER_Z1)
 
 	local dressing = Instance.new("Folder")
 	dressing.Name = "Dressing"
@@ -827,7 +968,115 @@ function HallBuilder.build(): Model
 	for _, room in LINK_ROOMS do
 		table.insert(sections, { LINK_X0, LINK_X1, room.z0, room.z1, FLOOR_ROOM, Enum.Material.Slate })
 	end
+	table.insert(sections, { COURT_X0, COURT_X1, COURT_Z0, COURT_Z1, GRASS, Enum.Material.Grass })
 	floorSections(dressing, sections)
+
+	-- Sprint 41: the courtyard. Stone paths, a dead tree in a brick planter, benches, low walls and moonlight.
+	local court = Instance.new("Folder")
+	court.Name = "Courtyard"
+	court.Parent = dressing
+	local function overlay(
+		name: string,
+		x0: number,
+		x1: number,
+		z0: number,
+		z1: number,
+		color: Color3,
+		m: Enum.Material
+	)
+		local p = trim(
+			court,
+			name,
+			Vector3.new(x1 - x0, TILE_THICKNESS * 2, z1 - z0),
+			CFrame.new((x0 + x1) / 2, TILE_THICKNESS, (z0 + z1) / 2),
+			color,
+			m
+		)
+		p.CastShadow = false
+	end
+	-- a long path down the middle and one cross path to each doorway
+	overlay("Path", -72, -64, COURT_Z0, COURT_Z1, STONE, Enum.Material.Cobblestone)
+	for _, z in COURT_DOORS do
+		overlay("Path", -64, COURT_X1, z - 4, z + 4, STONE, Enum.Material.Cobblestone)
+	end
+	local treeX, treeZ = -88, 20
+	-- the planter's low brick walls (solid, 2.5 tall: you can hop them) around dead earth
+	local function lowWall(name: string, x0: number, x1: number, z0: number, z1: number, h: number)
+		box(court, name, Vector3.new(x0, 0, z0), Vector3.new(x1, h, z1), BRICK, Enum.Material.Brick)
+	end
+	lowWall("Planter", treeX - 6, treeX + 6, treeZ - 6, treeZ - 5, 2.5)
+	lowWall("Planter", treeX - 6, treeX + 6, treeZ + 5, treeZ + 6, 2.5)
+	lowWall("Planter", treeX - 6, treeX - 5, treeZ - 5, treeZ + 5, 2.5)
+	lowWall("Planter", treeX + 5, treeX + 6, treeZ - 5, treeZ + 5, 2.5)
+	overlay("Earth", treeX - 5, treeX + 5, treeZ - 5, treeZ + 5, BARK, Enum.Material.Ground)
+	-- the dead tree: a solid trunk and bare, crooked branches
+	box(
+		court,
+		"TreeTrunk",
+		Vector3.new(treeX - 1, 0, treeZ - 1),
+		Vector3.new(treeX + 1, 16, treeZ + 1),
+		BARK,
+		Enum.Material.Wood
+	)
+	local branches = {
+		{ Vector3.new(0.8, 9, 0.8), CFrame.new(treeX + 2.5, 18, treeZ) * CFrame.Angles(0, 0, -0.6) },
+		{ Vector3.new(0.7, 8, 0.7), CFrame.new(treeX - 2.5, 17, treeZ + 1) * CFrame.Angles(0.2, 0, 0.7) },
+		{ Vector3.new(0.6, 7, 0.6), CFrame.new(treeX, 19, treeZ - 2.5) * CFrame.Angles(-0.6, 0, 0.1) },
+		{ Vector3.new(0.5, 6, 0.5), CFrame.new(treeX + 0.5, 21, treeZ + 2.5) * CFrame.Angles(0.5, 0, -0.2) },
+		{ Vector3.new(0.4, 5, 0.4), CFrame.new(treeX + 5, 22, treeZ) * CFrame.Angles(0, 0, -1.1) },
+	}
+	for _, b in branches do
+		trim(court, "TreeBranch", b[1], b[2], BARK, Enum.Material.Wood)
+	end
+	-- low walls breaking up the west half (hop-over cover from the balcony's view)
+	lowWall("LowWall", COURT_X0, -80, -60, -58.5, 3)
+	lowWall("LowWall", COURT_X0, -80, 100, 101.5, 3)
+	lowWall("LowWall", -86, -84.5, -110, -80, 3)
+	-- benches along the west wall, facing east: a solid seat and back on two legs
+	for _, z in { -100, -30, 60, 140 } do
+		box(court, "BenchSeat", Vector3.new(-97, 1.6, z - 3), Vector3.new(-95, 2, z + 3), WOOD_DARK, Enum.Material.Wood)
+		box(court, "BenchBack", Vector3.new(-97.6, 2, z - 3), Vector3.new(-97, 4, z + 3), WOOD_DARK, Enum.Material.Wood)
+		trim(court, "BenchLegs", Vector3.new(1.6, 1.6, 5), CFrame.new(-96, 0.8, z), STEEL, Enum.Material.Metal)
+	end
+	-- moonlight: wide, cold SurfaceLights shining down from just under the cap
+	for _, z in { -80, 20, 120 } do
+		local moonPart = trim(
+			court,
+			"Moonlight",
+			Vector3.new(2, 0.2, 2),
+			CFrame.new((COURT_X0 + COURT_X1) / 2, COURT_WALL_HEIGHT - 1, z),
+			MOON,
+			Enum.Material.SmoothPlastic
+		)
+		moonPart.Transparency = 1
+		moonPart.CastShadow = false
+		local light = Instance.new("SurfaceLight")
+		light.Face = Enum.NormalId.Bottom
+		light.Color = MOON
+		light.Brightness = 2.5
+		light.Range = 60
+		light.Angle = 150
+		light.Shadows = true
+		light.Parent = moonPart
+	end
+	-- the second floor's wooden floor overlay on the ceiling slab
+	local upperFloor = trim(
+		dressing,
+		"UpperFloor",
+		Vector3.new(UPPER_X1 - UPPER_X0, TILE_THICKNESS * 2, UPPER_Z1 - UPPER_Z0),
+		CFrame.new((UPPER_X0 + UPPER_X1) / 2, UPPER_Y + TILE_THICKNESS, (UPPER_Z0 + UPPER_Z1) / 2),
+		FLOOR_GYM,
+		Enum.Material.WoodPlanks
+	)
+	upperFloor.CastShadow = false
+	-- upstairs lockers on the east wall, facing the balcony
+	for z = UPPER_Z0 + 20, UPPER_Z1 - 20, 40 do
+		lockerBank(
+			dressing,
+			CFrame.lookAt(Vector3.new(UPPER_X1 - 1, UPPER_Y, z), Vector3.new(UPPER_X1 - 10, UPPER_Y, z)),
+			4
+		)
+	end
 
 	local function doorSkips(doors: { number }, z0: number, margin: number): { { number } }
 		local spans = {}
@@ -940,16 +1189,7 @@ function HallBuilder.build(): Model
 		end
 		dressFace(dressing, side.face, side.from, side.to, blocked, side.sparse)
 		for _, z in side.doors do
-			local room = Props.classroomDoorway(dressing, faceFrame(side.face, z - side.face.a.Z, ROOM_LIFT, 0))
-			-- Sprint 38: Start3 is in the first right-hand classroom, so its south desk is cleared away to give the
-			-- spawn point (and its +-2 overlap offset) open floor.
-			if side.doors == doorsA and z == doorsA[1] then
-				for _, desk in room:GetChildren() do
-					if desk:IsA("Model") and desk:GetPivot().Position.Z < z then
-						desk:Destroy()
-					end
-				end
-			end
+			Props.classroomDoorway(dressing, faceFrame(side.face, z - side.face.a.Z, ROOM_LIFT, 0))
 		end
 		for _, o in side.openings or {} do
 			doorFrame(dressing, side.face, o[1] - side.face.a.Z, o[2] - side.face.a.Z, o[3])
@@ -1124,7 +1364,7 @@ function HallBuilder.build(): Model
 			z += spacing
 		end
 	end
-	lampRow(0, 0, turn1, LAMP_SPACING)
+	lampRow(0, backZ, turn1, LAMP_SPACING)
 	lampRow(STEP, turn1, turn2, LAMP_SPACING)
 	lampRow(0, turn2, LENGTH, LAMP_SPACING)
 	local backMid = (BACK_X0 + BACK_X1) / 2
@@ -1136,6 +1376,12 @@ function HallBuilder.build(): Model
 		table.insert(lampSpots, Vector3.new(midX, WALL_HEIGHT, room.door + 4))
 	end
 	lampRow(hoopX, GYM_Z0 + 4, GYM_Z1, 26)
+	-- the second floor: one row under its own ceiling, set a little in from the balcony edge
+	local upperLampZ = UPPER_Z0 + 8
+	while upperLampZ <= UPPER_Z1 - 4 do
+		table.insert(lampSpots, Vector3.new(-33, UPPER_TOP, upperLampZ))
+		upperLampZ += LAMP_SPACING * 1.5
+	end
 	table.sort(lampSpots, function(p, q)
 		return p.Z < q.Z
 	end)
@@ -1175,16 +1421,17 @@ function HallBuilder.build(): Model
 	start.Parent = hall
 
 	-- Sprint 38: the round spawn points. RoundService puts each player on one of these (spread out before any
-	-- is reused), falling back to Hall.Start. All sit on open floor, clear of lockers, desks and obstacles, 420..520
-	-- studs' walk from every exit (Sprint 39) and over 400 studs from the monster's entry by the main Exit.
+	-- is reused), falling back to Hall.Start. All sit on open floor, clear of lockers, desks and obstacles, and far
+	-- from the monster's entry by the main Exit. Sprint 41: all at the far south end, 550..700 studs' walk from
+	-- every exit; Start4 is upstairs (its base at UPPER_Y).
 	local starts = Instance.new("Folder")
 	starts.Name = "Starts"
 	starts.Parent = hall
 	local startSpots: { { any } } = {
-		{ "Start1", Vector3.new(0, 0, 0) }, -- the main Start
+		{ "Start1", Vector3.new(0, 0, backZ + 8) }, -- the south end of the main hall
 		{ "Start2", Vector3.new(backMid, 0, BACK_Z0 + 5) }, -- the south end of the back corridor
-		{ "Start3", Vector3.new(half + 6, 0, doorsA[1] - 2.5) }, -- in the first right-hand classroom (see above)
-		{ "Start4", Vector3.new(midX, 0, (CROSS_HALLS[1][1] + CROSS_HALLS[1][2]) / 2) }, -- the first cross hall
+		{ "Start3", Vector3.new(-71, 0, COURT_Z0 + 10) }, -- the south end of the courtyard
+		{ "Start4", Vector3.new(-35, UPPER_Y, UPPER_Z0 + 8) }, -- the south end of the second floor
 	}
 	for _, spot in startSpots do
 		local point = box(
