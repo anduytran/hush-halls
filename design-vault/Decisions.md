@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-05 — Sprint 35: the halls are a flooded school
+- **The map was re-dressed as an abandoned school at night**, not pool rooms, so it looks clearly different from DONT SPLASH. The footprint, turns and layouts were kept so the balance and the monster/round code didn't change. Alternative considered: a new longer or branching route; deferred because it would need retuning the water and monster.
+
 ## 2026-11-05 — Sprint 34: sound and depth before launch
 - **Audio, hazards (puddles, planks) and three rotating hall layouts were pulled ahead of launch**, because web research showed DONT SPLASH (≈99K concurrent players, launched 2026-10-17) owns the "blind monster that hunts by sound" idea, and our build had no audio and one hall. We set ourselves apart through the rising water and the store page ([[Content/Store Page]]): lead with "every sound floods the halls". Alternative considered: ship v1 as-is to catch the trend; rejected as it's too thin to compete next to the original.
 

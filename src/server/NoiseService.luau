@@ -104,6 +104,9 @@ local function getFloor(): BasePart?
 	return nil
 end
 
+-- Sprint 35 look only: murky teal glass. updateWater shows it at WATER_TRANSPARENCY while there is water.
+local WATER_TRANSPARENCY = 0.3
+
 local function createWater(): Part
 	local water = Instance.new("Part")
 	water.Name = "Water"
@@ -112,9 +115,10 @@ local function createWater(): Part
 	water.CanTouch = false
 	water.CanQuery = false
 	water.CastShadow = false
-	water.Material = Enum.Material.SmoothPlastic
-	water.Color = Color3.fromRGB(40, 110, 200)
-	water.Transparency = 0.5
+	water.Material = Enum.Material.Glass
+	water.Color = Color3.fromRGB(38, 92, 86)
+	water.Reflectance = 0.12
+	water.Transparency = WATER_TRANSPARENCY
 	water.Size = Vector3.new(1, 0, 1)
 	water.Parent = workspace
 	return water
@@ -147,7 +151,7 @@ local function updateWater(water: Part)
 		water.CFrame = CFrame.new(center.X, base - 0.025, center.Z)
 		return
 	end
-	water.Transparency = 0.5
+	water.Transparency = WATER_TRANSPARENCY
 	water.Size = Vector3.new(footprint.X, level, footprint.Z)
 	water.CFrame = CFrame.new(center.X, base + level / 2, center.Z)
 end

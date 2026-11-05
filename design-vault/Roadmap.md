@@ -12,6 +12,8 @@ Done (history in git log):
 - [x] Sprint 33: walk noise 0.1 → 0.05 (`SNEAK_NOISE`), spec-tested.
 - [x] Sprint 34: sound and depth before launch. [[Mechanics/Audio and Atmosphere]] (footsteps, heartbeat, water ambience, monster growl and scream), [[Mechanics/Hazards and Layouts]] (puddles, planks, 3 random layouts), a join title card with the tagline, and [[Content/Store Page]] copy. Puddle splash playtested; numbers in [[Balance]].
 
+- [x] Sprint 35: [[Mechanics/Map Overhaul]], the hall is now a flooded school at night (tiles, panelled walls, ceiling, lockers, 6 classrooms, 12 lamps with 3 flickering, EXIT double door, teal fog, murky water). Two live rounds: the monster caught both times, hazards fired.
+
 ## Needs a playtest
 - Two real clients at once (Test → Clients and Servers, by hand): second player caught/drowned, join mid-round, several escapes, slow loader spectates, leave mid-spawn; earlier stuck-at-Start spawn overlap.
 - Touch sprint button and HUD layout on a real phone/tablet (hold sprints, release walks, respawn mid-hold).
@@ -27,6 +29,7 @@ Done (history in git log):
 
 ## Next
 - Milestone 2 — Feel (rest): water VFX, camera shake, proper hall art, a real plank-creak sound (currently a pitched-down footstep).
+- Map follow-ups: cut the ~2,950 parts per build (swap the tile parts for one textured floor) for phones; make the roof not standable or move it so a player who falls off the lobby doesn't land on it; tag flicker lamps in one place (Props vs Atmosphere).
 - Store page: make the icon and thumbnails from [[Content/Store Page]].
 
 ## Later
