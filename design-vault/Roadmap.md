@@ -10,6 +10,7 @@ Done (history in git log):
 - [x] Sprint 29: 0.5 s hearing confirm (`HEAR_CONFIRM`). Sprints 30–31: water 0.3/s, catch-before-drown confirmed.
 - [x] Sprint 32: 10-minute Studio soak, clean Output (no code changed).
 - [x] Sprint 33: walk noise 0.1 → 0.05 (`SNEAK_NOISE`), spec-tested.
+- [x] Sprint 34: sound and depth before launch. [[Mechanics/Audio and Atmosphere]] (footsteps, heartbeat, water ambience, monster growl and scream), [[Mechanics/Hazards and Layouts]] (puddles, planks, 3 random layouts), a join title card with the tagline, and [[Content/Store Page]] copy. Puddle splash playtested; numbers in [[Balance]].
 
 ## Needs a playtest
 - Two real clients at once (Test → Clients and Servers, by hand): second player caught/drowned, join mid-round, several escapes, slow loader spectates, leave mid-spawn; earlier stuck-at-Start spawn overlap.
@@ -17,14 +18,16 @@ Done (history in git log):
 - Purchases in a published place: VIP 20 coins, Neon Trail/VIP tag, Coins100, receipt flow; `_test` hooks absent on a live server.
 - Feel: does the monster still feel threatening when everyone walks?
 - Full-round walk at 0.05 noise in a live Studio round (spec only so far).
+- Sprint 34: walk vs sprint footstep loudness, growl/heartbeat range, scream on catch, plank creak, monster turning toward a puddle splash, all three layouts appearing; Monster/RoundService/NoiseService specs not re-run.
+- Unknown `rbxassetid://203785492` "asset type does not match" warning in Output (not in `src/`; likely something in the place file).
 
 ## Blocked
 - Purchases: every ID in `src/shared/Products.luau` is 0. Create the passes and product in the Creator Hub and paste the IDs in.
 - Receipts can't be tested in an unpublished place; needs the place published with API access on.
 
 ## Next
-- Copy the sprint 1 numbers the 0.3/s water rate and 0.05 walk noise into [[Balance]].
-- Milestone 2 — Feel: footstep sounds, monster audio, water VFX, camera shake, proper hall art.
+- Milestone 2 — Feel (rest): water VFX, camera shake, proper hall art, a real plank-creak sound (currently a pitched-down footstep).
+- Store page: make the icon and thumbnails from [[Content/Store Page]].
 
 ## Later
 - Milestone 3 — Depth: multiple halls, hazards (puddles, loose planks), daily rewards, leaderboards.

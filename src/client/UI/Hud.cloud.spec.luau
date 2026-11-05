@@ -66,12 +66,13 @@ end
 -- Builds a throwaway HUD and a stand-in Shop button (same geometry as ShopMenu's ShopButton) inside a
 -- 375x667 frame, so they lay out as on a portrait phone. The live HUD and Shop button are never touched.
 -- Returns the frame, the throwaway HUD's panels by name, its test hooks and a cleanup function.
-local function phoneViewport(): (Frame, { [string]: GuiObject }, any, () -> ())
+-- width/height default to 375x667; pass 667x375 for a landscape phone.
+local function phoneViewport(width: number?, height: number?): (Frame, { [string]: GuiObject }, any, () -> ())
 	local holder = Instance.new("ScreenGui")
 	holder.Name = "HudPhoneTest"
 	holder.IgnoreGuiInset = true
 	local viewport = Instance.new("Frame")
-	viewport.Size = UDim2.fromOffset(375, 667)
+	viewport.Size = UDim2.fromOffset(width or 375, height or 667)
 	viewport.BackgroundTransparency = 1
 	viewport.Parent = holder
 	holder.Parent = player:WaitForChild("PlayerGui")
@@ -371,5 +372,77 @@ return {
 			liveButton.Visible == UserInputService.TouchEnabled,
 			`live SprintButton.Visible is {liveButton.Visible} but TouchEnabled is {UserInputService.TouchEnabled}`
 		)
+	end,
+
+	["later HUD mounts do not show the title card again"] = function()
+		withThrowaway(function(throwaway)
+			assert(not throwaway:FindFirstChild("TitleCard"), "a second HUD mount showed the title card again")
+		end)
+	end,
+
+	["title card shows the game name, tagline and hint"] = function()
+		withThrowaway(function(throwaway, hooks)
+			local card = hooks.showTitle()
+			assert(
+				card.Parent == throwaway and card.Name == "TitleCard",
+				"showTitle should parent TitleCard to the HUD"
+			)
+			local Config = require(ReplicatedStorage:WaitForChild("Shared"):WaitForChild("Config")) :: any
+			local title = card:FindFirstChild("Title") :: TextLabel
+			local tagline = card:FindFirstChild("Tagline") :: TextLabel
+			local hint = card:FindFirstChild("Hint") :: TextLabel
+			assert(title and tagline and hint, "TitleCard needs Title, Tagline and Hint labels")
+			assert(title.Text == string.upper(Config.GAME_NAME), `Title is "{title.Text}"`)
+			assert(title.Text == "HUSH HALLS", `Title should read HUSH HALLS, got "{title.Text}"`)
+			assert(tagline.Text == "Every sound floods the halls.", `Tagline is "{tagline.Text}"`)
+			assert(hint.Text == "Walk to stay quiet. Sprint and it hears you.", `Hint is "{hint.Text}"`)
+			for _, t in { title, tagline, hint } do
+				local limit = t:FindFirstChildOfClass("UITextSizeConstraint")
+				assert(limit and limit.MinTextSize >= 14, `{t.Name} needs a min text size of 14`)
+			end
+			assert(card.Size.X.Offset == 0 and card.Size.Y.Offset == 0, "TitleCard Size should be scale-only")
+		end)
+	end,
+
+	["title card fades out and is gone after about 4 s"] = function()
+		withThrowaway(function(_, hooks)
+			local card = hooks.showTitle()
+			task.wait(1)
+			assert(card.Parent, "TitleCard gone too early (under 1 s)")
+			local title = card:FindFirstChild("Title") :: TextLabel
+			assert(title.TextTransparency < 0.1, `Title not visible at 1 s, TextTransparency {title.TextTransparency}`)
+			task.wait(3.5)
+			assert(card.Parent == nil, "TitleCard still on screen 4.5 s after it was shown")
+		end)
+	end,
+
+	["on portrait and landscape phones the title card fits and clears the SprintButton"] = function()
+		local liveParent = gui.Parent
+		for _, size in { Vector2.new(375, 667), Vector2.new(667, 375) } do
+			local viewport, panels, phoneHooks, cleanup = phoneViewport(size.X, size.Y)
+			local ok, err = pcall(function()
+				phoneHooks.forceTouch(true)
+				local card = phoneHooks.showTitle(viewport)
+				settle(5)
+				local min, max = rect(card, viewport.AbsolutePosition)
+				assert(
+					min.X >= 0 and min.Y >= 0 and max.X <= size.X and max.Y <= size.Y,
+					`{size}: TitleCard off screen: {min} - {max}`
+				)
+				for _, name in { "SprintButton", "NoiseMeter", "WaterBar" } do
+					assert(not overlaps(card, panels[name]), `{size}: TitleCard overlaps {name}`)
+				end
+				for _, t in card:GetChildren() do
+					if t:IsA("TextLabel") then
+						assert(t.TextFits, `{size}: "{t.Text}" does not fit the TitleCard`)
+					end
+				end
+			end)
+			cleanup()
+			if not ok then
+				error(err, 0)
+			end
+		end
+		assert(gui.Parent == liveParent and goalPanel.Parent == gui, "phone test must not move the live HUD")
 	end,
 }

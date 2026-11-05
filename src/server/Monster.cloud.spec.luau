@@ -205,4 +205,34 @@ return {
 		assert(test.HEARD_SPEED == 12, "expected HEARD_SPEED 12, got " .. tostring(test.HEARD_SPEED))
 		assert(test.HEARD_SPEED < test.SPRINT_SPEED, "the heard threshold should sit below the sprint threshold")
 	end,
+
+	["has a looping 3D growl and a one-shot scream on the body"] = function()
+		local body = monsterBody()
+		local growl = body:FindFirstChild("Growl")
+		local scream = body:FindFirstChild("Scream")
+		assert(growl and growl:IsA("Sound"), "expected a Growl Sound under the Monster part")
+		assert(scream and scream:IsA("Sound"), "expected a Scream Sound under the Monster part")
+		assert(growl.Looped == true, "growl should loop")
+		assert(scream.Looped == false, "scream should be one-shot")
+		assert(
+			growl.RollOffMaxDistance >= 50 and growl.RollOffMaxDistance <= 70,
+			"growl RollOffMaxDistance should be ~60, got " .. tostring(growl.RollOffMaxDistance)
+		)
+	end,
+
+	["growl plays only while Running, at drift volume with nobody heard"] = function()
+		local body = monsterBody()
+		local growl = body:FindFirstChild("Growl") :: Sound
+		state:SetAttribute("RoundState", "Running")
+		task.wait(0.2)
+		assert(growl.Playing == true, "growl should play while Running")
+		if RunService:IsStudio() then
+			local test = Monster._test
+			assert(test.GROWL_VOLUME_CHASE > test.GROWL_VOLUME_DRIFT, "chasing should be louder than drifting")
+			assert(growl.Volume == test.GROWL_VOLUME_DRIFT, "with no heard player the growl should be at drift volume")
+		end
+		state:SetAttribute("RoundState", "Lobby")
+		task.wait(0.2)
+		assert(growl.Playing == false, "growl should stop outside Running")
+	end,
 }

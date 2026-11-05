@@ -4,6 +4,8 @@
 -- Players who touch Hall.Exit while Running escape: +10 Coins and a teleport to the lobby platform above Start.
 -- Player attribute InRound is true while a participant is alive and hasn't escaped; Monster and NoiseService
 -- only hear, kill and drown InRound players.
+-- Sprint 34: each round starts by rebuilding the hall's obstacles and hazards with a random layout
+-- (HallBuilder.buildLayout); Start and Exit stay put.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -336,6 +338,16 @@ function RoundService.start()
 					left = if #getPlayers() > 0 then left - pause else lobbyLength
 				end
 				State:SetAttribute("TimeLeft", 0)
+
+				-- Sprint 34: a random layout, built before anyone is spawned. A failure only warns; the round
+				-- still plays in the hall as it is.
+				local layoutOk, layoutErr = pcall(function()
+					local HallBuilder = require(script.Parent.Map.HallBuilder)
+					HallBuilder.buildLayout(math.random(1, HallBuilder.LAYOUT_COUNT), hall)
+				end)
+				if not layoutOk then
+					report(`[RoundService] couldn't rebuild the hall layout: {layoutErr}`)
+				end
 
 				-- Spawn everyone at Start, then start the clock once they're in place.
 				round += 1

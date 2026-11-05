@@ -8,9 +8,22 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local GameState = require(ReplicatedStorage.Shared.GameState)
+local NoiseService = require(script.Parent.NoiseService)
 local SpeedSampler = require(script.Parent.SpeedSampler)
 
 local Monster = {}
+
+-- Monster audio. Both are free ProSoundEffects Creator Store assets, checked to load in Studio.
+local SOUNDS = {
+	Growl = "rbxassetid://9113980507", -- "Creature Mix Giant Crab Monster Roar Growl 1", ~8.4 s, looped
+	Scream = "rbxassetid://9113985848", -- "Creature Scream Piercing Pain Female 3", ~1.3 s, one-shot on a catch
+}
+local GROWL_ROLLOFF_MAX = 60
+local GROWL_ROLLOFF_MIN = 8
+local GROWL_VOLUME_DRIFT = 0.25 -- drifting, or waiting in silence
+local GROWL_VOLUME_CHASE = 0.8 -- chasing a heard player
+local SCREAM_VOLUME = 1
+local SCREAM_ROLLOFF_MAX = 120
 
 local SIZE = 6
 local HEARING_RANGE = 150
@@ -76,6 +89,38 @@ local function buildMonster(hall: Instance): Part
 
 	body.Parent = hall
 	return body
+end
+
+-- 3D sound on the monster's body. Returns nil (with a warning) if it can't be made; a SoundId that fails to
+-- load does not error, it just stays silent.
+local function makeSound(body: Part, name: string, soundId: string, looped: boolean, maxDistance: number): Sound?
+	local ok, result = pcall(function()
+		local sound = Instance.new("Sound")
+		sound.Name = name
+		sound.SoundId = soundId
+		sound.Looped = looped
+		sound.RollOffMode = Enum.RollOffMode.InverseTapered
+		sound.RollOffMinDistance = GROWL_ROLLOFF_MIN
+		sound.RollOffMaxDistance = maxDistance
+		sound.Parent = body
+		return sound
+	end)
+	if not ok then
+		warn(`[Monster] could not create {name} sound: {result}`)
+		return nil
+	end
+	return result
+end
+
+-- Play/Stop never decide game state, so any failure here is only warned about.
+local function safeSound(sound: Sound?, action: (Sound) -> ())
+	if not sound then
+		return
+	end
+	local ok, err = pcall(action, sound)
+	if not ok then
+		warn(`[Monster] {sound.Name} sound failed: {err}`)
+	end
 end
 
 local function anchorPosition(inst: Instance?): Vector3?
@@ -189,8 +234,13 @@ local function findLoudest(from: Vector3): Vector3?
 		end
 		local speed = sample.speed
 		local distance = (sample.position - from).Magnitude
-		if confirmHeard(player, speed, now) and distance <= HEARING_RANGE then
-			local score = speed + (if speed > SPRINT_SPEED then 1000 else 0)
+		-- Sprint 34: a hazard (puddle splash, plank creak) makes a player heard at once while its noise lasts,
+		-- scored like moving at that fraction of sprint speed (so a sprinter is still chased first).
+		local hazard = NoiseService.noiseFloor(player)
+		local heard = confirmHeard(player, speed, now)
+		if (heard or hazard > 0) and distance <= HEARING_RANGE then
+			local score = math.max(if heard then speed else 0, hazard * SPRINT_SPEED)
+				+ (if speed > SPRINT_SPEED then 1000 else 0)
 			if score > bestScore then
 				bestScore = score
 				bestPos = sample.position
@@ -228,6 +278,27 @@ local function run(hall: Instance)
 	local lastHeard: Vector3? = nil
 	local connections: { RBXScriptConnection } = {}
 
+	local growl = makeSound(body, "Growl", SOUNDS.Growl, true, GROWL_ROLLOFF_MAX)
+	local scream = makeSound(body, "Scream", SOUNDS.Scream, false, SCREAM_ROLLOFF_MAX)
+	safeSound(growl, function(sound)
+		sound.Volume = GROWL_VOLUME_DRIFT
+	end)
+	safeSound(scream, function(sound)
+		sound.Volume = SCREAM_VOLUME
+	end)
+	local growlChasing = false
+
+	-- Louder while chasing a heard player than while drifting. Only writes Volume when the mode changes.
+	local function setGrowlChasing(chasing: boolean)
+		if chasing == growlChasing then
+			return
+		end
+		growlChasing = chasing
+		safeSound(growl, function(sound)
+			sound.Volume = if chasing then GROWL_VOLUME_CHASE else GROWL_VOLUME_DRIFT
+		end)
+	end
+
 	local function onTouched(hit: BasePart)
 		local character = hit:FindFirstAncestorOfClass("Model")
 		local player = character and Players:GetPlayerFromCharacter(character)
@@ -237,6 +308,9 @@ local function run(hall: Instance)
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if humanoid and humanoid.Health > 0 then
 			humanoid.Health = 0
+			safeSound(scream, function(sound)
+				sound:Play()
+			end)
 		end
 	end
 
@@ -248,6 +322,7 @@ local function run(hall: Instance)
 
 		if level < QUIET_NOISE then
 			-- Silence: drift to where it last heard someone, then wait there.
+			setGrowlChasing(false)
 			table.clear(heardSince)
 			if lastHeard and moveToward(body, lastHeard, DRIFT_SPEED, dt) then
 				lastHeard = nil
@@ -256,6 +331,7 @@ local function run(hall: Instance)
 		end
 
 		local target = findLoudest(body.Position)
+		setGrowlChasing(target ~= nil)
 		if target then
 			lastHeard = target
 			moveToward(body, target, BASE_SPEED + level * NOISE_SPEED, dt)
@@ -275,6 +351,10 @@ local function run(hall: Instance)
 		lastHeard = nil
 		body.CanTouch = false
 		body.CFrame = CFrame.new(clampY(parkPosition(hall)))
+		setGrowlChasing(false)
+		safeSound(growl, function(sound)
+			sound:Stop()
+		end)
 	end
 
 	local function beginRound()
@@ -283,6 +363,9 @@ local function run(hall: Instance)
 		body.CanTouch = true
 		table.insert(connections, body.Touched:Connect(onTouched))
 		table.insert(connections, RunService.Heartbeat:Connect(onHeartbeat))
+		safeSound(growl, function(sound)
+			sound:Play()
+		end)
 	end
 
 	local function onRoundState()
@@ -311,6 +394,9 @@ if RunService:IsStudio() then
 		HEARD_SPEED = HEARD_SPEED,
 		HEAR_CONFIRM = HEAR_CONFIRM,
 		SPRINT_SPEED = SPRINT_SPEED,
+		SOUNDS = SOUNDS,
+		GROWL_VOLUME_DRIFT = GROWL_VOLUME_DRIFT,
+		GROWL_VOLUME_CHASE = GROWL_VOLUME_CHASE,
 	}
 end
 

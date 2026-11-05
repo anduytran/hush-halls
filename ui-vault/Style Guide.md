@@ -12,6 +12,7 @@ tags: [ui, style]
 | Accent | #F5A524 | Primary buttons, highlights |
 | Text | #E8EAF1 | Body text |
 | Danger | #FF6B6B | Warnings, damage |
+| Water | #3A8DFF | Water bar fill, title card tagline and edge/glow strokes |
 
 ## Typography
 - Headings: BuilderSans Bold

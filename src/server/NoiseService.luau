@@ -8,6 +8,9 @@
 -- RISE_PER_SECOND is 0.3 (was 0.6) so the monster, not the water, is the main sprint punishment.
 -- SNEAK_NOISE is 0.05 (was 0.1): full-speed walking for a 120 s round raises the water to ~1.8 studs
 -- (0.05 * 0.3 * 120), under the 3.43 root height, so only sprinting can drown you.
+-- Sprint 34: NoiseService.addNoise(player, amount, duration) puts a temporary floor under one player's noise
+-- (Hazards.luau uses it for puddle splashes and plank creaks). It only counts while that player is InRound
+-- and alive, like their speed noise.
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -38,6 +41,8 @@ local underwaterSince: { [Player]: number } = {}
 local sampler = SpeedSampler.new()
 -- Studio-only (set through NoiseService._test): when not nil, replaces the measured loudest noise.
 local noiseOverride: number? = nil
+-- Sprint 34: temporary per-player noise floors from addNoise.
+local noiseFloors: { [Player]: { amount: number, expires: number } } = {}
 
 local function allowSprintEvent(player: Player): boolean
 	local now = os.clock()
@@ -147,15 +152,55 @@ local function updateWater(water: Part)
 	water.CFrame = CFrame.new(center.X, base + level / 2, center.Z)
 end
 
+-- The player's active addNoise floor (0 when none or expired).
+local function floorFor(player: Player, now: number): number
+	local floor = noiseFloors[player]
+	if not floor then
+		return 0
+	end
+	if now >= floor.expires then
+		noiseFloors[player] = nil
+		return 0
+	end
+	return floor.amount
+end
+
+-- Raises this player's noise to at least `amount` (0-1) for `duration` seconds. A louder floor already running
+-- is kept; an equal or louder one replaces it. Bad arguments are ignored.
+function NoiseService.addNoise(player: Player, amount: number, duration: number)
+	if typeof(player) ~= "Instance" or not player:IsA("Player") then
+		return
+	end
+	if type(amount) ~= "number" or amount ~= amount or type(duration) ~= "number" or duration ~= duration then
+		return
+	end
+	if duration <= 0 or duration == math.huge then
+		return
+	end
+	amount = math.clamp(amount, 0, 1)
+	local now = os.clock()
+	if floorFor(player, now) > amount then
+		return
+	end
+	noiseFloors[player] = { amount = amount, expires = now + duration }
+end
+
+-- The player's current addNoise floor (0 when none). Monster uses this to hear hazards.
+function NoiseService.noiseFloor(player: Player): number
+	return floorFor(player, os.clock())
+end
+
 local function step(water: Part, dt: number)
 	local now = os.clock()
 	local loudest = 0
 	for _, player in Players:GetPlayers() do
 		local humanoid, root = getHumanoid(player)
 		if humanoid and root and humanoid.Health > 0 then
-			loudest = math.max(loudest, noiseFromSpeed(sampler.update(player, root, root.Position, now)))
+			local speedNoise = noiseFromSpeed(sampler.update(player, root, root.Position, now))
+			loudest = math.max(loudest, speedNoise, floorFor(player, now))
 		else
 			sampler.forget(player)
+			noiseFloors[player] = nil
 		end
 	end
 	if noiseOverride ~= nil then
@@ -226,6 +271,7 @@ function NoiseService.start()
 		player.CharacterAdded:Connect(function(character)
 			sprinting[player] = false
 			underwaterSince[player] = nil
+			noiseFloors[player] = nil
 			local humanoid = character:WaitForChild("Humanoid", 10)
 			if humanoid and humanoid:IsA("Humanoid") then
 				humanoid.WalkSpeed = WALK_SPEED
@@ -243,6 +289,7 @@ function NoiseService.start()
 		sprinting[player] = nil
 		sprintBudget[player] = nil
 		underwaterSince[player] = nil
+		noiseFloors[player] = nil
 		sampler.forget(player)
 	end)
 

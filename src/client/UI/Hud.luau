@@ -6,9 +6,19 @@ local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
+local Config = require(ReplicatedStorage.Shared.Config)
+
 local WATER_MAX = 20
+
+local TITLE_TAGLINE = "Every sound floods the halls."
+local TITLE_HINT = "Walk to stay quiet. Sprint and it hears you."
+-- Fade in, hold, fade out: about 4 s on screen in total
+local TITLE_FADE_IN = 0.25
+local TITLE_HOLD = 3
+local TITLE_FADE_OUT = 0.75
 local NOISE_DANGER = 0.6
 
 local COLOR_BG = Color3.fromHex("#0F1115")
@@ -20,8 +30,13 @@ local COLOR_NOISE = Color3.fromHex("#8FD694")
 
 local FONT_BOLD = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Bold)
 local FONT_MEDIUM = Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Medium)
+local FONT_ITALIC =
+	Font.new("rbxasset://fonts/families/BuilderSans.json", Enum.FontWeight.Medium, Enum.FontStyle.Italic)
 
 local Hud = {}
+
+-- The title card shows once per session, on the first HUD mounted (the join), never on later mounts
+local titleShown = false
 
 -- True while some mounted HUD holds the global HushSprint binding
 local sprintOwned = false
@@ -84,6 +99,98 @@ local function waitFor(parent: Instance, name: string): Instance
 		child = parent:WaitForChild(name, 30)
 	end
 	return child
+end
+
+-- Join title card: game name, tagline and a one-line hint in a dark panel in the middle of the screen.
+-- It fades in, holds, fades out and destroys itself (about 4 s). Size 0.8 x 0.3 scale, clamped to
+-- 260x150 - 560x240 px and centred, so on a 375x667 phone it is 300 px wide (clear of the WaterBar on the
+-- left) and ends ~145 px above the SprintButton; on a 667x375 landscape phone it ends ~25 px above it.
+-- Input passes through (nothing in it is Active).
+local function titleCard(parent: Instance): Frame
+	local card = panel(parent, "TitleCard")
+	card.AnchorPoint = Vector2.new(0.5, 0.5)
+	card.Position = UDim2.fromScale(0.5, 0.5)
+	card.Size = UDim2.fromScale(0.8, 0.3)
+	card.ZIndex = 10
+	card.BackgroundTransparency = 1
+	local cardLimit = Instance.new("UISizeConstraint")
+	cardLimit.MinSize = Vector2.new(260, 150)
+	cardLimit.MaxSize = Vector2.new(560, 240)
+	cardLimit.Parent = card
+	-- Faint water-blue edge so the card reads as part of the flooded halls
+	local edge = Instance.new("UIStroke")
+	edge.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	edge.Color = COLOR_WATER
+	edge.Thickness = 1
+	edge.Transparency = 1
+	edge.Parent = card
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 12)
+	pad.PaddingRight = UDim.new(0, 12)
+	pad.PaddingTop = UDim.new(0, 12)
+	pad.PaddingBottom = UDim.new(0, 12)
+	pad.Parent = card
+	local list = Instance.new("UIListLayout")
+	list.FillDirection = Enum.FillDirection.Vertical
+	list.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	list.VerticalAlignment = Enum.VerticalAlignment.Center
+	list.SortOrder = Enum.SortOrder.LayoutOrder
+	list.Padding = UDim.new(0, 4)
+	list.Parent = card
+
+	local function line(name: string, order: number, font: Font, height: number, maxSize: number): TextLabel
+		local t = label(card, name, font, maxSize)
+		t.LayoutOrder = order
+		t.Size = UDim2.fromScale(1, height)
+		t.ZIndex = 11
+		t.TextWrapped = true
+		t.TextTransparency = 1
+		return t
+	end
+	local title = line("Title", 1, FONT_BOLD, 0.46, 64)
+	title.Text = string.upper(Config.GAME_NAME)
+	local glow = Instance.new("UIStroke")
+	glow.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+	glow.Color = COLOR_WATER
+	glow.Thickness = 1
+	glow.Transparency = 1
+	glow.Parent = title
+	local tagline = line("Tagline", 2, FONT_ITALIC, 0.2, 24)
+	tagline.Text = TITLE_TAGLINE
+	tagline.TextColor3 = COLOR_WATER
+	local hint = line("Hint", 3, FONT_MEDIUM, 0.2, 20)
+	hint.Text = TITLE_HINT
+
+	-- Each faded property and the value it fades in to
+	local fades: { { target: Instance, shown: { [string]: number } } } = {
+		{ target = card, shown = { BackgroundTransparency = 0.1 } },
+		{ target = edge, shown = { Transparency = 0.6 } },
+		{ target = title, shown = { TextTransparency = 0 } },
+		{ target = glow, shown = { Transparency = 0.6 } },
+		{ target = tagline, shown = { TextTransparency = 0 } },
+		{ target = hint, shown = { TextTransparency = 0.15 } },
+	}
+	local function fade(seconds: number, visible: boolean)
+		for _, f in fades do
+			local goal: { [string]: number } = {}
+			for prop, value in f.shown do
+				goal[prop] = if visible then value else 1
+			end
+			local direction = if visible then Enum.EasingDirection.Out else Enum.EasingDirection.In
+			TweenService:Create(f.target, TweenInfo.new(seconds, Enum.EasingStyle.Quad, direction), goal :: any):Play()
+		end
+	end
+	fade(TITLE_FADE_IN, true)
+	-- Timed destroy rather than Tween.Completed, so it still cleans up if the HUD goes away mid-fade
+	task.delay(TITLE_FADE_IN + TITLE_HOLD, function()
+		if card.Parent then
+			fade(TITLE_FADE_OUT, false)
+		end
+	end)
+	task.delay(TITLE_FADE_IN + TITLE_HOLD + TITLE_FADE_OUT, function()
+		card:Destroy()
+	end)
+	return card
 end
 
 function Hud.mount()
@@ -286,6 +393,12 @@ function Hud.mount()
 	sprintPad.Parent = sprintButton
 	sprintButton.Parent = gui
 
+	-- Centre: join title card, first HUD of the session only
+	if not titleShown then
+		titleShown = true
+		titleCard(gui)
+	end
+
 	gui.Parent = player:WaitForChild("PlayerGui")
 
 	-- Live values from ReplicatedStorage.State
@@ -417,6 +530,10 @@ function Hud.mount()
 		hooks.releaseSprint = buttonUp
 		hooks.isSprinting = function(): boolean
 			return sprinting
+		end
+		-- Builds a fresh title card (whatever titleShown says) under parent, or this HUD's gui
+		hooks.showTitle = function(parent: Instance?): Frame
+			return titleCard(parent or gui)
 		end
 	end
 

@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-05 — Sprint 34: sound and depth before launch
+- **Audio, hazards (puddles, planks) and three rotating hall layouts were pulled ahead of launch**, because web research showed DONT SPLASH (≈99K concurrent players, launched 2026-10-17) owns the "blind monster that hunts by sound" idea, and our build had no audio and one hall. We set ourselves apart through the rising water and the store page ([[Content/Store Page]]): lead with "every sound floods the halls". Alternative considered: ship v1 as-is to catch the trend; rejected as it's too thin to compete next to the original.
+
 ## 2026-11-04 — Sprint 33: walking can't drown you
 - **Walk noise halved from 0.1 to 0.05 (`SNEAK_NOISE` in `NoiseService.luau`)**, so a full 120 s round of walking raises the water ~1.8 studs, under the 3.43 root height; only sprinting fills the hall. Answers sprint 32's balance question. Alternative considered: lowering `RISE_PER_SECOND` again; rejected as it would also soften sprinting. Spec-tested, not yet played live.
 
