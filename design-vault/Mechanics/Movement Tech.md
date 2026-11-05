@@ -56,6 +56,19 @@ Implementation: `Movement.luau` sets the horizontal velocity in PreSimulation (G
 - [ ] The monster can path up the stairs and through the courtyard; its patrol points cover both. (paths up and down succeed and the patrol has Courtyard/Upstairs areas; the real monster wasn't seen climbing)
 - [x] Part count under 3,200 (use big parts); no Output errors; checks pass. (2,900–2,901)
 
+## Effects and feel (sprint 42) — acceptance criteria
+Effects (client, `src/client/MovementFX.luau`):
+- [x] The FOV widens with speed (70 at walk, up to about 82 at 32 studs/s), with a quick +6 kick on a dash; it eases back smoothly and works with Dread's FOV tightening. (measured 77.6 at sprint 24, 82.2 peak on a dash, back to 70 standing; both modules add a tracked delta, so they stack. Dread together with speed not seen at once)
+- [x] Speed lines or wind streaks at the screen edges above 24 studs/s. (up to 14 lines seen during a dash and slide; plus a wind loop)
+- [x] Dash: a short whoosh sound and an air-burst puff. Slide: a dust and water spray trail at the feet, a scrape sound and a slight camera tilt (about 4°). (roll measured 4.0°; whoosh is the built-in wind sound pitched up, since there's no built-in swoosh; particles hard to judge by eye at night)
+- [x] Landing: a camera dip scaled to the fall, and a thud with a splash when you're in water. Wall jump: dust at the wall. Double jump: an air ring. (thud heard on a 20-stud drop and the ring fired on a double jump; the splash and the wall dust weren't tried)
+- [ ] Effects only for the local player's camera; other players see the particles. They are cheap (pooled emitters, nothing past 150 studs). (one shared emitter per kind, culled at 150; other players' particles from MoveAction are untested with two clients)
+Feel (`src/client/Movement.luau`):
+- [ ] Coyote time (0.12 s after leaving a ledge, you can still jump from the ground) and a jump buffer (Space up to 0.12 s before landing still jumps, which is what makes bunny hops reliable). (the buffer is tested: 94 ms early, kept 24 studs/s; coyote time is built but untested. Near the ground the buffer beats a wall jump)
+- [x] Ground acceleration is snappy (0 to sprint in about 0.2 s) but the stop still glides; air strafing turns noticeably. (0.15 s; stop 0.48 s; GROUND_ACCEL 16, AIR_ACCEL 10; the turn wasn't measured)
+- [x] A short stamina-empty feedback (a pip flash on the HUD is already there, or a soft "denied" click). (clickfast.wav, at most every 0.25 s)
+- [x] No Output errors; checks pass.
+
 ## Status (sprint 39)
 Built; checks pass. Fixes after QA: the wall jump treated the first airborne frames as grounded, and the slide cancelled itself at once. Both now work. `MovementNoise.cloud.spec.luau` passes 6/6.
 

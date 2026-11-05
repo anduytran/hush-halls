@@ -18,6 +18,7 @@ local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 
 local GameState = require(ReplicatedStorage.Shared.GameState)
@@ -64,8 +65,12 @@ local WALL_JUMP_COOLDOWN = 0.2
 -- and about 0.27 s from walk (10); 4 measured 0.9 s.
 local GROUND_FRICTION = 7
 local STOP_SPEED = 10
-local GROUND_ACCEL = 12 -- the keys reach walk or sprint speed in about 0.15 s
-local AIR_ACCEL = 4 -- air strafing: the air may add speed sideways to the current velocity
+-- Sprint 42: 12 measured 0 to sprint (98%) in 0.22 s with 50% at 0.08 s; 16 is snappier at the start and
+-- still lands near 0.2 s. Friction is untouched, so letting go still glides to a stop.
+local GROUND_ACCEL = 16
+-- Air strafing: the air may add speed sideways to the current velocity. Sprint 42 raised it from 4 so holding
+-- A or D in the air bends the path noticeably (still capped at max(speed, MOMENTUM_CAP)).
+local AIR_ACCEL = 10
 local MOMENTUM_CAP = 32 -- hops and air strafing never go above this
 local HOP_WINDOW = 0.15 -- a jump this soon after landing skips ground friction
 local CARRY_DRAG = 12 -- studs/s lost per second in the air while above MOMENTUM_CAP (a dash jump)
@@ -83,6 +88,16 @@ local HANDS_OFF_STATES: { [Enum.HumanoidStateType]: boolean } = {
 }
 local LAUNCH_GRACE = 0.15 -- after a launch, touching the ground doesn't count as landing yet
 local TOUCH_JUMP_GAP = 0.15 -- JumpRequest repeats while held; a gap this long starts a new press
+
+-- Feel (sprint 42). Coyote time: a jump press this soon after walking off a ledge is still a ground jump. Jump
+-- buffer: a press while falling that would land within this time waits and jumps on landing (reliable bunny hops)
+-- instead of spending the double jump.
+local COYOTE_TIME = 0.12
+local JUMP_BUFFER = 0.12
+-- A soft click when a move is refused for lack of stamina (a built-in sound, so no asset upload).
+local DENIED_SOUND_ID = "rbxasset://sounds/clickfast.wav"
+local DENIED_VOLUME = 0.3
+local DENIED_GAP = 0.25 -- at most one click this often
 
 local WALL_DIRECTIONS: { Vector3 } = {}
 for i = 0, 7 do
@@ -130,6 +145,11 @@ local doubleJumpUsed = false
 local wallJumps = 0
 local lastWallJump = -math.huge
 local lastTouchJump = -math.huge
+local lastGroundedAt = -math.huge -- the last step that was on the ground (coyote time counts from here)
+local coyoteReady = false -- left the ground without jumping or being launched
+local bufferedJumpAt = -math.huge -- when a jump press was held over for the landing
+local deniedSound: Sound? = nil
+local lastDenied = -math.huge
 
 local function flat(v: Vector3): Vector3
 	return Vector3.new(v.X, 0, v.Z)
@@ -162,8 +182,35 @@ local function publishStamina()
 	player:SetAttribute("Stamina", stamina)
 end
 
-local function spend(cost: number): boolean
+-- The soft "denied" click, local to this player only (a Sound in SoundService plays without a position).
+local function denied()
+	local now = os.clock()
+	if now - lastDenied < DENIED_GAP then
+		return
+	end
+	lastDenied = now
+	local sound = deniedSound
+	if not sound or sound.Parent == nil then
+		local created = Instance.new("Sound")
+		created.Name = "MovementDenied"
+		created.SoundId = DENIED_SOUND_ID
+		created.Volume = DENIED_VOLUME
+		created.PlaybackSpeed = 0.8 -- a little lower and softer than the stock click
+		created.Parent = SoundService
+		deniedSound = created
+		sound = created
+	end
+	if sound then
+		sound:Play()
+	end
+end
+
+-- Spends stamina; when there isn't enough, plays the denied click (unless quiet) and returns false.
+local function spend(cost: number, quiet: boolean?): boolean
 	if stamina < cost - 1e-6 then
+		if not quiet then
+			denied()
+		end
 		return false
 	end
 	stamina = math.max(0, stamina - cost)
@@ -253,6 +300,34 @@ end
 local function launch(root: BasePart, horizontal: Vector3, up: number)
 	root.AssemblyLinearVelocity = Vector3.new(horizontal.X, up, horizontal.Z)
 	lastLaunch = os.clock()
+	coyoteReady = false
+end
+
+-- True when the root is falling and will reach the floor below within JUMP_BUFFER (gravity included).
+local function landingSoon(current: Rig): boolean
+	local vy = current.root.AssemblyLinearVelocity.Y
+	if vy > 0 then
+		return false
+	end
+	local reach = current.root.Size.Y / 2 + current.humanoid.HipHeight -- root centre to the feet
+	local fall = -vy * JUMP_BUFFER + 0.5 * workspace.Gravity * JUMP_BUFFER * JUMP_BUFFER
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { current.character }
+	params.RespectCanCollide = true
+	params.IgnoreWater = true
+	local hit = workspace:Raycast(current.root.Position, Vector3.new(0, -(reach + fall + 0.5), 0), params)
+	return hit ~= nil and hit.Normal.Y > 0.5 and hit.Distance - reach <= fall + 0.25
+end
+
+-- A jump from the ground while already airborne (coyote time, or a buffered press that just landed).
+local function groundJump(current: Rig, now: number)
+	local humanoid, root = current.humanoid, current.root
+	humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	local velocity = root.AssemblyLinearVelocity
+	root.AssemblyLinearVelocity = Vector3.new(velocity.X, jumpSpeed(humanoid), velocity.Z)
+	lastLaunch = now
+	coyoteReady = false
 end
 
 -- Quake-style acceleration: add speed along wishDir until the velocity's part along it reaches wishSpeed.
@@ -302,6 +377,9 @@ local function resetMoves()
 	landedAt = -math.huge
 	doubleJumpUsed = false
 	wallJumps = 0
+	lastGroundedAt = -math.huge
+	coyoteReady = false
+	bufferedJumpAt = -math.huge
 end
 
 -- The outward normal of the nearest wall beside the root, if there is one.
@@ -420,6 +498,23 @@ local function onJumpPress()
 		return
 	end
 
+	-- Coyote time: just walked (or slid) off a ledge without jumping, so this is still a ground jump.
+	if
+		coyoteReady
+		and now - lastGroundedAt <= COYOTE_TIME
+		and humanoid:GetState() ~= Enum.HumanoidStateType.Jumping
+	then
+		groundJump(current, now)
+		return
+	end
+
+	-- Jump buffer: about to land, so hold the press for the landing (a free hop that keeps the speed) rather
+	-- than spending the double jump a moment before touching down.
+	if landingSoon(current) then
+		bufferedJumpAt = now
+		return
+	end
+
 	if now - lastWallJump >= WALL_JUMP_COOLDOWN then
 		local normal = findWall(current)
 		if normal and (wallJumps == 0 or spend(WALL_JUMP_COST)) then
@@ -493,8 +588,19 @@ local function step(dt: number)
 		if not wasOnGround then
 			landedAt = now
 		end
+		lastGroundedAt = now
+		coyoteReady = true
 	end
 	wasOnGround = onGround
+
+	if grounded and now - bufferedJumpAt <= JUMP_BUFFER and not HANDS_OFF_STATES[humanoid:GetState()] then
+		-- The buffered press lands: jump now, inside the hop window, so the speed carries (bunny hop).
+		bufferedJumpAt = -math.huge
+		if sliding then
+			endSlide(current)
+		end
+		groundJump(current, now)
+	end
 
 	if HANDS_OFF_STATES[humanoid:GetState()] then
 		-- Ladders, seats, ragdolls: the humanoid moves itself at the server's WalkSpeed.
@@ -588,6 +694,12 @@ local function bindCharacter(character: Model)
 		local written = writtenWalkSpeed
 		if written == nil or math.abs(humanoid.WalkSpeed - written) > 1e-3 then
 			baseWalkSpeed = humanoid.WalkSpeed
+		end
+	end)
+	humanoid.StateChanged:Connect(function(_, newState)
+		-- The humanoid's own jump (Space, Humanoid.Jump, auto-jump) uses up the coyote jump.
+		if newState == Enum.HumanoidStateType.Jumping then
+			coyoteReady = false
 		end
 	end)
 	humanoid.Died:Connect(function()

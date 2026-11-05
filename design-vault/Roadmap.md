@@ -19,8 +19,10 @@ Done (history in git log):
 - [x] Sprint 39: [[Mechanics/Movement Tech]]. The school is about 1.7× longer (446–519 studs to an exit), the round is 180 s, and there's Deadlock-style movement (stamina pips, dash, slide, double jump and wall jump), with every move making noise.
 - [x] Sprint 40: procedural animations for every move (dash, dash jump, slide, slide hop, double-jump flip, wall-jump push-off), shown to other players through a server attribute.
 - [x] Sprint 41: momentum movement (friction stop, air control, bunny and slide hops kept, capped at 32), a moonlit courtyard and a second-floor balcony with 2 stairs; 592–659 studs to an exit.
+- [x] Sprint 42: movement effects (speed FOV that adds up with Dread's, speed lines, a dash whoosh, slide dust/spray and camera tilt, landing thud, double-jump ring) and feel (jump buffer, coyote time, faster acceleration, stronger air strafing, a denied click).
 
 ## Needs a playtest
+- Sprint 42: coyote time; water-landing splash; wall-jump dust; Dread and speed FOV together; other players' particles with two clients.
 - Sprint 41: the monster climbing the stairs in a real round; movement feel and the phone thumbstick; air-strafe speed gain; Monster/RoundService cloud specs not re-run.
 - Sprint 40: move animations seen from a second client; R6 rigs. Follow-up: send SlideHop and the slide's end to the server so other players see them exactly.
 - Sprint 39: the monster turning toward a dash; the DASH/SLIDE buttons on a phone; the HUD pips draining; whether the movement feels good; the NoiseService spec still assumes a 120 s round; ui-vault/Screens/HUD.md doesn't describe the pips and buttons yet.
