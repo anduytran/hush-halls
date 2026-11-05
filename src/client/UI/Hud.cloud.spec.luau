@@ -16,8 +16,8 @@ if not player then
 	}
 end
 
-local LOBBY_TEXT = "Next round soon. Reach the EXIT."
-local RUNNING_TEXT = "Reach the EXIT. Sprinting is loud."
+local LOBBY_TEXT = "Next round soon. Find an exit."
+local RUNNING_TEXT = "Find an exit. Sprinting is loud."
 local ENDED_TEXT = "Round over."
 local ESCAPED_TEXT = "You escaped! Wait for the next round."
 

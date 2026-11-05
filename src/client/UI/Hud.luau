@@ -280,13 +280,13 @@ function Hud.mount()
 			goalText.Text = "You escaped! Wait for the next round."
 			goalText.TextColor3 = COLOR_NOISE
 		elseif roundState == "Running" then
-			goalText.Text = "Reach the EXIT. Sprinting is loud."
+			goalText.Text = "Find an exit. Sprinting is loud."
 			goalText.TextColor3 = COLOR_TEXT
 		elseif roundState == "Ended" then
 			goalText.Text = "Round over."
 			goalText.TextColor3 = COLOR_TEXT
 		else
-			goalText.Text = "Next round soon. Reach the EXIT."
+			goalText.Text = "Next round soon. Find an exit."
 			goalText.TextColor3 = COLOR_TEXT
 		end
 	end

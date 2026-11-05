@@ -13,6 +13,14 @@
 -- lockers and crates are desk piles, each no wider in X than the old obstacle, so with the 2.2-deep locker rows
 -- every layout still keeps a 12-stud walking gap. The classrooms sit behind walls inside Hall.Floor's footprint,
 -- so the water (and drowning) reaches them too.
+-- Sprint 36 (Routes, Exits and Dread): a parallel back corridor (x -40..-28, z 34..282) west of the main hall,
+-- joined to it by two cross halls (z 40..52 and 212..224) and by two classrooms with a doorway on each side
+-- (z 80..100 and 240..264), so there are 3+ paths from Start. A gym opens off the back corridor. Extra exits are
+-- invisible trigger BaseParts in Hall.Exits: FireExit (gym west wall) and BrokenWindow (north wall of the second
+-- classroom), each with a green EXIT sign. Hall.Exit stays the main exit. Shortest walks from Start are about
+-- 270 (fire exit), 275 (window) and 305 (main). Hall.Floor still covers the whole footprint (the water uses it).
+-- To stay under 2,000 parts: one floor overlay per section instead of checker tiles, and the wall lockers are
+-- cheap banks (one body, a door, vent and handle per locker) instead of 14-part Props lockers.
 
 local CollectionService = game:GetService("CollectionService")
 local Workspace = game:GetService("Workspace")
@@ -29,8 +37,17 @@ local STEP = 12 -- how far the middle segment is shifted along +X
 
 local FLOOR_CREAM = Color3.fromRGB(196, 190, 172)
 local FLOOR_GREY = Color3.fromRGB(104, 108, 106)
-local TILE = 4 -- checker tile size
-local TILE_THICKNESS = 0.02 -- the grey tiles are thin, non-colliding overlays on the cream Floor
+local FLOOR_SECTION = FLOOR_CREAM:Lerp(FLOOR_GREY, 0.45) -- worn linoleum, one overlay per section
+local FLOOR_ROOM = Color3.fromRGB(58, 58, 54)
+local FLOOR_GYM = Color3.fromRGB(150, 112, 70)
+local TILE_THICKNESS = 0.02 -- floor overlays are thin, non-colliding parts on the cream Floor
+local LOCKER_GREEN = Color3.fromRGB(84, 104, 88)
+local LOCKER_DOOR = Color3.fromRGB(94, 114, 96)
+local LOCKER_DARK = Color3.fromRGB(38, 46, 40)
+local STEEL = Color3.fromRGB(170, 172, 168)
+local CHALK_GREEN = Color3.fromRGB(34, 52, 42)
+local EXIT_GREEN = Color3.fromRGB(40, 255, 110)
+local NIGHT = Color3.fromRGB(14, 20, 34)
 local PLASTER = Color3.fromRGB(214, 202, 172)
 local CEILING_COLOR = Color3.fromRGB(150, 146, 132)
 local WOOD_DARK = Color3.fromRGB(66, 44, 30)
@@ -47,6 +64,25 @@ local PUDDLE_SIZE = Vector3.new(6, 0.1, 5) -- flat, sitting on the floor; walk-t
 local PLANK_COLOR = Color3.fromRGB(110, 74, 42)
 local PLANK_SIZE = Vector3.new(3, 0.3, 8) -- slightly raised; low enough to step onto
 
+-- Sprint 36 routes (see the header). Interiors are given; walls are WALL_THICKNESS outside them.
+local BACK_X0, BACK_X1 = -40, -28 -- back corridor
+local BACK_Z0, BACK_Z1 = 34, 282
+local LINK_X0, LINK_X1 = -26, -14 -- cross halls and link classrooms, between the two corridors
+local GYM_X0, GYM_X1 = -70, -42
+local GYM_Z0, GYM_Z1 = 216, 262
+local GYM_DOOR = { 222, 234 } -- opening in the back corridor's west wall
+local FIRE_EXIT_Z = 250 -- centre of the fire exit on the gym's west wall
+local CROSS_TOP = 15 -- cross hall and gym openings are cut up to this height
+local LINK_DOOR_HALF = 4 -- link classroom doorways are 8 wide, up to DOOR_TOP
+local CROSS_HALLS = { { 40, 52 }, { 212, 224 } }
+type LinkRoom = { z0: number, z1: number, door: number, window: boolean? }
+local LINK_ROOMS: { LinkRoom } = {
+	{ z0 = 80, z1 = 100, door = 88 },
+	{ z0 = 240, z1 = 264, door = 246, window = true }, -- broken window in the north wall
+}
+local WINDOW_X0, WINDOW_X1 = -23, -17 -- broken window in LINK_ROOMS[2]'s north wall
+local WINDOW_SILL, WINDOW_TOP = 3, 9
+
 export type Obstacle = { kind: "Pillar" | "Crate", x: number, z: number, size: number? }
 export type Layout = {
 	obstacles: { Obstacle },
@@ -57,6 +93,8 @@ export type Layout = {
 -- Each layout keeps at least a 12-stud gap beside every obstacle, keeps clear of the turn openings
 -- (x 0..12 at z=100 and z=200), Start (z=0) and Exit (z 296..300), and has 4-6 puddles and 4-6 planks.
 -- Hazards are walk-through, so they never block the route. Layout 1 is the original greybox placement.
+-- Sprint 36: the main hall's left wall now has openings at z 40..52, 84..92, 212..224 and 242..250. Obstacles at
+-- x -6 are 2 wide either side, so a 4-stud gap stays along that wall and every opening can still be reached.
 local LAYOUTS: { Layout } = {
 	{
 		obstacles = {
@@ -163,7 +201,43 @@ local function box(
 end
 
 local function wall(parent: Instance, name: string, x0: number, x1: number, z0: number, z1: number)
+	if x1 - x0 <= 0.01 or z1 - z0 <= 0.01 then
+		return
+	end
 	box(parent, name, Vector3.new(x0, 0, z0), Vector3.new(x1, WALL_HEIGHT, z1), PLASTER, Enum.Material.Plaster)
+end
+
+-- An opening in a wall along Z: { zFrom, zTo, top }. The wall above `top` stays as a "<name>Lintel".
+type Opening = { number }
+
+-- A wall running along Z (x0..x1, z0..z1) with openings cut through it.
+local function wallZ(
+	parent: Instance,
+	name: string,
+	x0: number,
+	x1: number,
+	z0: number,
+	z1: number,
+	openings: { Opening }
+)
+	local spans = table.clone(openings)
+	table.sort(spans, function(p, q)
+		return p[1] < q[1]
+	end)
+	local z = z0
+	for _, o in spans do
+		wall(parent, name, x0, x1, z, o[1])
+		box(
+			parent,
+			name .. "Lintel",
+			Vector3.new(x0, o[3], o[1]),
+			Vector3.new(x1, WALL_HEIGHT, o[2]),
+			PLASTER,
+			Enum.Material.Plaster
+		)
+		z = o[2]
+	end
+	wall(parent, name, x0, x1, z, z1)
 end
 
 -- A wall running along Z with classroom openings (centre z values). Each opening is cut DOOR_HALF either side
@@ -177,20 +251,124 @@ local function wallWithDoors(
 	z1: number,
 	doors: { number }
 )
-	local z = z0
+	local openings: { Opening } = {}
 	for _, door in doors do
-		wall(parent, name, x0, x1, z, door - DOOR_HALF)
-		box(
-			parent,
-			name .. "Lintel",
-			Vector3.new(x0, DOOR_TOP, door - DOOR_HALF),
-			Vector3.new(x1, WALL_HEIGHT, door + DOOR_HALF),
-			PLASTER,
-			Enum.Material.Plaster
-		)
-		z = door + DOOR_HALF
+		table.insert(openings, { door - DOOR_HALF, door + DOOR_HALF, DOOR_TOP })
 	end
-	wall(parent, name, x0, x1, z, z1)
+	wallZ(parent, name, x0, x1, z0, z1, openings)
+end
+
+-- A dressing part: anchored, no collision, queries or touches.
+local function trim(
+	parent: Instance,
+	name: string,
+	size: Vector3,
+	cf: CFrame,
+	color: Color3,
+	material: Enum.Material
+): Part
+	local p = Instance.new("Part")
+	p.Name = name
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.CanTouch = false
+	p.Size = size
+	p.CFrame = cf
+	p.Color = color
+	p.Material = material
+	p.TopSurface = Enum.SurfaceType.Smooth
+	p.BottomSurface = Enum.SurfaceType.Smooth
+	p.Parent = parent
+	return p
+end
+
+-- `count` wall lockers side by side along cf.RightVector, centred on cf, front along cf.LookVector, base at cf.Y.
+-- Same size and colours as Props.lockerRow, but one shared body: 3 + 3 * count parts instead of 14 * count.
+local function lockerBank(parent: Instance, cf: CFrame, count: number): Model
+	local model = Instance.new("Model")
+	model.Name = "LockerRow"
+	local width = count * 2
+	local metal = Enum.Material.Metal
+	local base = trim(model, "Base", Vector3.new(width, 0.3, 1.9), cf * CFrame.new(0, 0.15, 0.05), LOCKER_DARK, metal)
+	trim(model, "Body", Vector3.new(width, 6.6, 2), cf * CFrame.new(0, 3.6, 0), LOCKER_GREEN, metal)
+	trim(model, "Cap", Vector3.new(width, 0.1, 2.1), cf * CFrame.new(0, 6.95, -0.05), LOCKER_DARK, metal)
+	for i = 1, count do
+		local x = (i - 1 - (count - 1) / 2) * 2
+		local shade = 1 + ((i * 37) % 7 - 3) * 0.025
+		local door = Color3.new(
+			math.clamp(LOCKER_DOOR.R * shade, 0, 1),
+			math.clamp(LOCKER_DOOR.G * shade, 0, 1),
+			math.clamp(LOCKER_DOOR.B * shade, 0, 1)
+		)
+		trim(model, "Door", Vector3.new(1.76, 6.3, 0.08), cf * CFrame.new(x, 3.6, -1.04), door, metal)
+		trim(model, "Vents", Vector3.new(1.1, 0.6, 0.05), cf * CFrame.new(x, 6.0, -1.09), LOCKER_DARK, metal)
+		trim(model, "Handle", Vector3.new(0.12, 0.6, 0.14), cf * CFrame.new(x + 0.6, 3.7, -1.15), STEEL, metal)
+	end
+	-- the lockers stand against the wall, so they block like the Props ones did
+	for _, d in model:GetChildren() do
+		if d:IsA("BasePart") and (d.Name == "Body" or d.Name == "Base") then
+			d.CanCollide = true
+			d.CanQuery = true
+		end
+	end
+	model.PrimaryPart = base
+	model.Parent = parent
+	return model
+end
+
+-- A green EXIT sign (box, neon face with text, light). Front along cf.LookVector, centred on cf.
+local function exitSign(parent: Instance, cf: CFrame): Model
+	local model = Instance.new("Model")
+	model.Name = "ExitSign"
+	local signBox = trim(
+		model,
+		"SignBox",
+		Vector3.new(4.4, 1.5, 0.5),
+		cf * CFrame.new(0, 0, 0.1),
+		Color3.fromRGB(30, 34, 32),
+		Enum.Material.Metal
+	)
+	local face = trim(
+		model,
+		"SignFace",
+		Vector3.new(4, 1.15, 0.06),
+		cf * CFrame.new(0, 0, -0.18),
+		EXIT_GREEN,
+		Enum.Material.Neon
+	)
+	local gui = Instance.new("SurfaceGui")
+	gui.Face = Enum.NormalId.Front
+	gui.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	gui.PixelsPerStud = 50
+	gui.LightInfluence = 0
+	gui.Parent = face
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Text = "EXIT"
+	label.Font = Enum.Font.GothamBlack
+	label.TextScaled = true
+	label.TextColor3 = Color3.fromRGB(240, 255, 240)
+	label.Parent = gui
+	local light = Instance.new("PointLight")
+	light.Color = EXIT_GREEN
+	light.Brightness = 2
+	light.Range = 16
+	light.Parent = face
+	model.PrimaryPart = signBox
+	model.Parent = parent
+	return model
+end
+
+-- An invisible, walk-through escape trigger from its min/max corners (RoundService connects its Touched).
+local function exitTrigger(parent: Instance, name: string, minCorner: Vector3, maxCorner: Vector3): Part
+	local part = box(parent, name, minCorner, maxCorner, Color3.fromRGB(0, 255, 90), Enum.Material.Neon)
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CastShadow = false
+	part.Transparency = 1
+	return part
 end
 
 -- A corridor-facing wall face: from `a` to `b` on the floor (Y=0), `normal` points into the corridor.
@@ -247,8 +425,16 @@ local function wainscot(parent: Instance, face: Face)
 end
 
 -- Locker rows (and a notice board in every other gap) along a face, between `from` and `to` (distance from
--- face.a), keeping out of `blocked` spans. Rows are 5 lockers (10 studs) with 7-stud gaps.
-local function dressFace(parent: Instance, face: Face, from: number, to: number, blocked: { { number } })
+-- face.a), keeping out of `blocked` spans. Rows are 5 lockers (10 studs) with 7-stud gaps. `sparse` (the back
+-- corridor) uses 12-stud gaps and no notice boards, to stay inside the part budget.
+local function dressFace(
+	parent: Instance,
+	face: Face,
+	from: number,
+	to: number,
+	blocked: { { number } },
+	sparse: boolean?
+)
 	local free: { { number } } = {}
 	local s = from
 	local spans = table.clone(blocked)
@@ -273,14 +459,14 @@ local function dressFace(parent: Instance, face: Face, from: number, to: number,
 			if count < 2 then
 				break
 			end
-			Props.lockerRow(parent, faceFrame(face, a + count, 0, LOCKER_REACH), count)
+			lockerBank(parent, faceFrame(face, a + count, 0, LOCKER_REACH), count)
 			a += count * 2
-			local gap = 7
+			local gap = if sparse then 12 else 7
 			if a + gap > b then
 				break
 			end
 			board = not board
-			if board then
+			if board and not sparse then
 				Props.noticeBoard(parent, faceFrame(face, a + gap / 2, 4, 0))
 			end
 			a += gap
@@ -288,36 +474,26 @@ local function dressFace(parent: Instance, face: Face, from: number, to: number,
 	end
 end
 
--- Grey checker tiles over the cream Floor, inside the corridor rectangles { xMin, xMax, zMin, zMax }.
-local function floorTiles(parent: Instance, rects: { { number } })
-	local tiles = Instance.new("Folder")
-	tiles.Name = "FloorTiles"
-	tiles.Parent = parent
-	for x = -WIDTH / 2, WIDTH / 2 + STEP - TILE, TILE do
-		for z = -12, LENGTH - TILE, TILE do
-			local cx, cz = x + TILE / 2, z + TILE / 2
-			local inside = false
-			for _, r in rects do
-				if cx > r[1] and cx < r[2] and cz > r[3] and cz < r[4] then
-					inside = true
-					break
-				end
-			end
-			if inside and (x // TILE + z // TILE) % 2 == 0 then
-				local tile = box(
-					tiles,
-					"Tile",
-					Vector3.new(x, 0, z),
-					Vector3.new(x + TILE, TILE_THICKNESS, z + TILE),
-					FLOOR_GREY,
-					Enum.Material.SmoothPlastic
-				)
-				tile.CanCollide = false
-				tile.CanQuery = false
-				tile.CanTouch = false
-				tile.CastShadow = false
-			end
-		end
+-- One thin floor overlay per section rectangle { xMin, xMax, zMin, zMax, color?, material? } over the cream Floor.
+-- (Sprint 36: replaces the per-tile checker, which alone was 231 parts.)
+type FloorRect = { any }
+local function floorSections(parent: Instance, rects: { FloorRect })
+	local folder = Instance.new("Folder")
+	folder.Name = "FloorSections"
+	folder.Parent = parent
+	for _, r in rects do
+		local section = box(
+			folder,
+			"FloorSection",
+			Vector3.new(r[1], 0, r[3]),
+			Vector3.new(r[2], TILE_THICKNESS, r[4]),
+			r[5] or FLOOR_SECTION,
+			r[6] or Enum.Material.SmoothPlastic
+		)
+		section.CanCollide = false
+		section.CanQuery = false
+		section.CanTouch = false
+		section.CastShadow = false
 	end
 end
 
@@ -426,6 +602,48 @@ function HallBuilder.buildLayout(index: number, target: Instance?): Instance
 	return hall
 end
 
+-- Wood jambs and a header round an opening `s0..s1` (distance along the face), `top` high.
+local function doorFrame(parent: Instance, face: Face, s0: number, s1: number, top: number)
+	for _, s in { s0 - 0.2, s1 + 0.2 } do
+		trim(
+			parent,
+			"DoorJamb",
+			Vector3.new(0.4, top, 0.3),
+			faceFrame(face, s, top / 2, 0.15),
+			WOOD_DARK,
+			Enum.Material.Wood
+		)
+	end
+	trim(
+		parent,
+		"DoorHeader",
+		Vector3.new(s1 - s0 + 0.8, 0.4, 0.3),
+		faceFrame(face, (s0 + s1) / 2, top + 0.2, 0.15),
+		WOOD_DARK,
+		Enum.Material.Wood
+	)
+end
+
+-- A chalkboard with a wood frame on a face, centred `along` studs from face.a.
+local function chalkboard(parent: Instance, face: Face, along: number)
+	trim(
+		parent,
+		"BoardFrame",
+		Vector3.new(8.6, 4.1, 0.1),
+		faceFrame(face, along, 5.5, 0.05),
+		WOOD_DARK,
+		Enum.Material.Wood
+	)
+	trim(
+		parent,
+		"Chalkboard",
+		Vector3.new(8, 3.5, 0.1),
+		faceFrame(face, along, 5.5, 0.12),
+		CHALK_GREEN,
+		Enum.Material.Slate
+	)
+end
+
 function HallBuilder.build(): Model
 	local existing = Workspace:FindFirstChild("Hall")
 	if existing then
@@ -440,12 +658,14 @@ function HallBuilder.build(): Model
 	local backZ = -10 -- a little room behind the spawn
 	local turn1 = LENGTH / 3 -- 100
 	local turn2 = LENGTH * 2 / 3 -- 200
+	local minX = GYM_X0 - t -- the gym is the west edge of the footprint
 
-	-- Floor covers every segment; its top sits at Y=0.
+	-- Floor covers every segment, the back corridor, the link rooms and the gym; its top sits at Y=0.
+	-- NoiseService sizes the water from this one part, so it must stay a single box over the whole footprint.
 	local floor = box(
 		hall,
 		"Floor",
-		Vector3.new(-half - t, -2, backZ - t),
+		Vector3.new(minX, -2, backZ - t),
 		Vector3.new(half + STEP + t, 0, LENGTH + t),
 		FLOOR_CREAM,
 		Enum.Material.SmoothPlastic
@@ -461,9 +681,27 @@ function HallBuilder.build(): Model
 	local doorsB = { 130, 170 } -- LeftWallB, rooms x -12..0
 	local doorsC = { 230, 265 } -- RightWallC, rooms x 12..24
 
+	-- Openings between the main hall's left wall and the back corridor: 2 cross halls and 2 link-room doors.
+	local links: { Opening } = {}
+	for _, c in CROSS_HALLS do
+		table.insert(links, { c[1], c[2], CROSS_TOP })
+	end
+	for _, room in LINK_ROOMS do
+		table.insert(links, { room.door - LINK_DOOR_HALF, room.door + LINK_DOOR_HALF, DOOR_TOP })
+	end
+	local function linksIn(z0: number, z1: number): { Opening }
+		local list: { Opening } = {}
+		for _, o in links do
+			if o[1] >= z0 and o[2] <= z1 then
+				table.insert(list, o)
+			end
+		end
+		return list
+	end
+
 	-- Segment A: x -12..12, z backZ..100
 	wall(walls, "BackWall", -half - t, half + t, backZ - t, backZ)
-	wall(walls, "LeftWallA", -half - t, -half, backZ, turn1 + t)
+	wallZ(walls, "LeftWallA", -half - t, -half, backZ, turn1 + t, linksIn(backZ, turn1))
 	wallWithDoors(walls, "RightWallA", half, half + t, backZ, turn1, doorsA)
 	-- Turn 1: corridor steps +12 in X. The 12-stud overlap x 0..12 is the opening.
 	wall(walls, "Turn1Right", half, half + STEP + t, turn1 - t, turn1)
@@ -475,15 +713,68 @@ function HallBuilder.build(): Model
 	wall(walls, "Turn2Left", -half - t, -half + STEP, turn2 - t, turn2)
 	wall(walls, "Turn2Right", half, half + STEP + t, turn2, turn2 + t)
 	-- Segment C: x -12..12, z 200..300
-	wall(walls, "LeftWallC", -half - t, -half, turn2 - t, LENGTH)
+	wallZ(walls, "LeftWallC", -half - t, -half, turn2 - t, LENGTH, linksIn(turn2, LENGTH))
 	wallWithDoors(walls, "RightWallC", half, half + t, turn2, LENGTH, doorsC)
 	wall(walls, "EndWall", -half - t, half + t, LENGTH, LENGTH + t)
+
+	-- Back corridor: x -40..-28, z 34..282, parallel to the main hall. Its east wall has the same 4 openings;
+	-- its west wall opens into the gym.
+	wallZ(walls, "BackHallEast", BACK_X1, LINK_X0, BACK_Z0 - t, BACK_Z1 + t, links)
+	wallZ(
+		walls,
+		"BackHallWest",
+		BACK_X0 - t,
+		BACK_X0,
+		BACK_Z0 - t,
+		BACK_Z1 + t,
+		{ { GYM_DOOR[1], GYM_DOOR[2], CROSS_TOP } }
+	)
+	wall(walls, "BackHallSouth", BACK_X0 - t, LINK_X0, BACK_Z0 - t, BACK_Z0)
+	wall(walls, "BackHallNorth", BACK_X0 - t, LINK_X0, BACK_Z1, BACK_Z1 + t)
+
+	-- Cross halls and link rooms between the two corridors (x -26..-14).
+	for i, c in CROSS_HALLS do
+		wall(walls, `CrossHall{i}South`, LINK_X0, LINK_X1, c[1] - t, c[1])
+		wall(walls, `CrossHall{i}North`, LINK_X0, LINK_X1, c[2], c[2] + t)
+	end
+	for i, room in LINK_ROOMS do
+		wall(walls, `LinkRoom{i}South`, LINK_X0, LINK_X1, room.z0 - t, room.z0)
+		if room.window then
+			-- the window wall: full-height pieces either side, a sill below and a header above the hole
+			local z0, z1 = room.z1, room.z1 + t
+			wall(walls, `LinkRoom{i}North`, LINK_X0, WINDOW_X0, z0, z1)
+			wall(walls, `LinkRoom{i}North`, WINDOW_X1, LINK_X1, z0, z1)
+			box(
+				walls,
+				`LinkRoom{i}Sill`,
+				Vector3.new(WINDOW_X0, 0, z0),
+				Vector3.new(WINDOW_X1, WINDOW_SILL, z1),
+				PLASTER,
+				Enum.Material.Plaster
+			)
+			box(
+				walls,
+				`LinkRoom{i}Header`,
+				Vector3.new(WINDOW_X0, WINDOW_TOP, z0),
+				Vector3.new(WINDOW_X1, WALL_HEIGHT, z1),
+				PLASTER,
+				Enum.Material.Plaster
+			)
+		else
+			wall(walls, `LinkRoom{i}North`, LINK_X0, LINK_X1, room.z1, room.z1 + t)
+		end
+	end
+
+	-- Gym: x -70..-42, z 216..262, west of the back corridor. Its east wall is BackHallWest.
+	wall(walls, "GymSouth", GYM_X0 - t, GYM_X1, GYM_Z0 - t, GYM_Z0)
+	wall(walls, "GymNorth", GYM_X0 - t, GYM_X1, GYM_Z1, GYM_Z1 + t)
+	wall(walls, "GymWest", GYM_X0 - t, GYM_X0, GYM_Z0 - t, GYM_Z1 + t)
 
 	-- The ceiling closes the whole footprint at WALL_HEIGHT.
 	box(
 		hall,
 		"Ceiling",
-		Vector3.new(-half - t, WALL_HEIGHT, backZ - t),
+		Vector3.new(minX, WALL_HEIGHT, backZ - t),
 		Vector3.new(half + STEP + t, WALL_HEIGHT + 1, LENGTH + t),
 		CEILING_COLOR,
 		Enum.Material.Plaster
@@ -493,11 +784,20 @@ function HallBuilder.build(): Model
 	dressing.Name = "Dressing"
 	dressing.Parent = hall
 
-	floorTiles(dressing, {
+	local sections: { FloorRect } = {
 		{ -half, half, backZ, turn1 },
 		{ -half + STEP, half + STEP, turn1, turn2 },
 		{ -half, half, turn2, LENGTH },
-	})
+		{ BACK_X0, BACK_X1, BACK_Z0, BACK_Z1 },
+		{ GYM_X0, GYM_X1, GYM_Z0, GYM_Z1, FLOOR_GYM, Enum.Material.WoodPlanks },
+	}
+	for _, c in CROSS_HALLS do
+		table.insert(sections, { LINK_X0, LINK_X1, c[1], c[2] })
+	end
+	for _, room in LINK_ROOMS do
+		table.insert(sections, { LINK_X0, LINK_X1, room.z0, room.z1, FLOOR_ROOM, Enum.Material.Slate })
+	end
+	floorSections(dressing, sections)
 
 	local function doorSkips(doors: { number }, z0: number, margin: number): { { number } }
 		local spans = {}
@@ -506,14 +806,32 @@ function HallBuilder.build(): Model
 		end
 		return spans
 	end
+	-- Openings as spans along a face that starts at z0.
+	local function openingSkips(openings: { Opening }, z0: number, margin: number): { { number } }
+		local spans = {}
+		for _, o in openings do
+			table.insert(spans, { o[1] - z0 - margin, o[2] - z0 + margin })
+		end
+		return spans
+	end
 
 	local px, nx, pz, nz = Vector3.xAxis, -Vector3.xAxis, Vector3.zAxis, -Vector3.zAxis
 	local function v(x: number, z: number): Vector3
 		return Vector3.new(x, 0, z)
 	end
+	local linksA, linksC = linksIn(backZ, turn1), linksIn(turn2, LENGTH)
+	local gymOpening: { Opening } = { { GYM_DOOR[1], GYM_DOOR[2], CROSS_TOP } }
 	-- Side walls (along Z): wainscot, then locker rows and notice boards between `from` and `to` (along the face).
-	local sideFaces: { { face: Face, doors: { number }, from: number, to: number } } = {
-		{ face = { a = v(-half, backZ), b = v(-half, turn1), normal = px }, doors = {}, from = 16, to = 100 },
+	-- `openings` get wood frames and are kept clear of lockers.
+	type Side = { face: Face, doors: { number }, openings: { Opening }?, from: number, to: number, sparse: boolean? }
+	local sideFaces: { Side } = {
+		{
+			face = { a = v(-half, backZ), b = v(-half, turn1), normal = px, skip = openingSkips(linksA, backZ, 0) },
+			doors = {},
+			openings = linksA,
+			from = 16,
+			to = 100,
+		},
 		{
 			face = { a = v(half, backZ), b = v(half, turn1), normal = nx, skip = doorSkips(doorsA, backZ, 0) },
 			doors = doorsA,
@@ -537,23 +855,63 @@ function HallBuilder.build(): Model
 			from = 10,
 			to = 90,
 		},
-		{ face = { a = v(-half, turn2), b = v(-half, LENGTH), normal = px }, doors = {}, from = 10, to = 88 },
+		{
+			face = { a = v(-half, turn2), b = v(-half, LENGTH), normal = px, skip = openingSkips(linksC, turn2, 0) },
+			doors = {},
+			openings = linksC,
+			from = 10,
+			to = 88,
+		},
 		{
 			face = { a = v(half, turn2), b = v(half, LENGTH), normal = nx, skip = doorSkips(doorsC, turn2, 0) },
 			doors = doorsC,
 			from = 10,
 			to = 88,
 		},
+		-- back corridor: lockers down the west side, bare panelling on the east side between the openings
+		{
+			face = {
+				a = v(BACK_X0, BACK_Z0),
+				b = v(BACK_X0, BACK_Z1),
+				normal = px,
+				skip = openingSkips(gymOpening, BACK_Z0, 0),
+			},
+			doors = {},
+			openings = gymOpening,
+			from = 6,
+			to = BACK_Z1 - BACK_Z0 - 6,
+			sparse = true,
+		},
+		{
+			face = {
+				a = v(BACK_X1, BACK_Z0),
+				b = v(BACK_X1, BACK_Z1),
+				normal = nx,
+				skip = openingSkips(links, BACK_Z0, 0),
+			},
+			doors = {},
+			openings = links,
+			from = 0,
+			to = 0,
+		},
 	}
 	for _, side in sideFaces do
 		wainscot(dressing, side.face)
-		dressFace(dressing, side.face, side.from, side.to, doorSkips(side.doors, side.face.a.Z, 1))
+		local blocked = doorSkips(side.doors, side.face.a.Z, 1)
+		for _, span in openingSkips(side.openings or {}, side.face.a.Z, 1) do
+			table.insert(blocked, span)
+		end
+		dressFace(dressing, side.face, side.from, side.to, blocked, side.sparse)
 		for _, z in side.doors do
 			Props.classroomDoorway(dressing, faceFrame(side.face, z - side.face.a.Z, ROOM_LIFT, 0))
 		end
+		for _, o in side.openings or {} do
+			doorFrame(dressing, side.face, o[1] - side.face.a.Z, o[2] - side.face.a.Z, o[3])
+		end
 	end
 
-	-- End walls and turn walls (along X): wainscot only. The end wall is left bare behind the exit door.
+	-- Wainscot only: end walls, turn walls, the back corridor's ends, cross halls, link rooms and the gym.
+	-- The end wall is left bare behind the exit door, and the gym's west wall behind the fire exit door.
 	local backFace: Face = { a = v(-half, backZ), b = v(half, backZ), normal = pz }
 	local crossFaces: { Face } = {
 		backFace,
@@ -562,13 +920,149 @@ function HallBuilder.build(): Model
 		{ a = v(-half, turn2), b = v(-half + STEP, turn2), normal = pz },
 		{ a = v(half, turn2), b = v(half + STEP, turn2), normal = nz },
 		{ a = v(-half, LENGTH), b = v(half, LENGTH), normal = nz, skip = { { half - 7, half + 7 } } },
+		{ a = v(BACK_X0, BACK_Z0), b = v(BACK_X1, BACK_Z0), normal = pz },
+		{ a = v(BACK_X0, BACK_Z1), b = v(BACK_X1, BACK_Z1), normal = nz },
+		{ a = v(GYM_X0, GYM_Z0), b = v(GYM_X1, GYM_Z0), normal = pz },
+		{ a = v(GYM_X0, GYM_Z1), b = v(GYM_X1, GYM_Z1), normal = nz },
+		{
+			a = v(GYM_X0, GYM_Z0),
+			b = v(GYM_X0, GYM_Z1),
+			normal = px,
+			skip = { { FIRE_EXIT_Z - GYM_Z0 - 7, FIRE_EXIT_Z - GYM_Z0 + 7 } },
+		},
+		{
+			a = v(GYM_X1, GYM_Z0),
+			b = v(GYM_X1, GYM_Z1),
+			normal = nx,
+			skip = openingSkips(gymOpening, GYM_Z0, 0),
+		},
 	}
+	for _, c in CROSS_HALLS do
+		table.insert(crossFaces, { a = v(LINK_X0, c[1]), b = v(LINK_X1, c[1]), normal = pz })
+		table.insert(crossFaces, { a = v(LINK_X0, c[2]), b = v(LINK_X1, c[2]), normal = nz })
+	end
+	local roomFaces: { [number]: { south: Face, north: Face } } = {}
+	for i, room in LINK_ROOMS do
+		local doorSpan = { { room.door - LINK_DOOR_HALF - room.z0, room.door + LINK_DOOR_HALF - room.z0 } }
+		local south: Face = { a = v(LINK_X0, room.z0), b = v(LINK_X1, room.z0), normal = pz }
+		local north: Face = {
+			a = v(LINK_X0, room.z1),
+			b = v(LINK_X1, room.z1),
+			normal = nz,
+			skip = if room.window then { { WINDOW_X0 - LINK_X0, WINDOW_X1 - LINK_X0 } } else nil,
+		}
+		roomFaces[i] = { south = south, north = north }
+		table.insert(crossFaces, south)
+		table.insert(crossFaces, north)
+		table.insert(crossFaces, { a = v(LINK_X0, room.z0), b = v(LINK_X0, room.z1), normal = px, skip = doorSpan })
+		table.insert(crossFaces, { a = v(LINK_X1, room.z0), b = v(LINK_X1, room.z1), normal = nx, skip = doorSpan })
+	end
 	for _, face in crossFaces do
 		wainscot(dressing, face)
 	end
 	Props.noticeBoard(dressing, faceFrame(backFace, half, 4, 0))
 
-	-- Ceiling lamps down the middle of each segment, LAMP_SPACING apart; every 4th one flickers.
+	-- Link rooms: a chalkboard and two desks each. Room 1's desks face its north board, behind the door lane;
+	-- room 2's face its south board, leaving a gap down the middle to the window.
+	local midX = (LINK_X0 + LINK_X1) / 2
+	local room1, room2 = LINK_ROOMS[1], LINK_ROOMS[2]
+	chalkboard(dressing, roomFaces[1].north, midX - LINK_X0)
+	for _, x in { -23, -17 } do
+		Props.desk(dressing, CFrame.new(x, 0, room1.z1 - 4) * CFrame.Angles(0, math.pi, 0))
+	end
+	chalkboard(dressing, roomFaces[2].south, midX - LINK_X0)
+	for _, x in { -24, -16 } do
+		Props.desk(dressing, CFrame.new(x, 0, room2.z1 - 10))
+	end
+
+	-- The broken window: a dark night sky in the hole (solid, so nobody climbs out), a sill, glass shards
+	-- and an EXIT sign above it.
+	local windowZ = room2.z1
+	local windowMid = (WINDOW_X0 + WINDOW_X1) / 2
+	local sky = box(
+		dressing,
+		"NightSky",
+		Vector3.new(WINDOW_X0, WINDOW_SILL, windowZ + t - 0.4),
+		Vector3.new(WINDOW_X1, WINDOW_TOP, windowZ + t),
+		NIGHT,
+		Enum.Material.SmoothPlastic
+	)
+	sky.CastShadow = false
+	local moon = Instance.new("PointLight")
+	moon.Color = Color3.fromRGB(110, 140, 220)
+	moon.Brightness = 0.6
+	moon.Range = 12
+	moon.Parent = sky
+	trim(
+		dressing,
+		"WindowSill",
+		Vector3.new(WINDOW_X1 - WINDOW_X0 + 0.6, 0.25, 0.7),
+		CFrame.new(windowMid, WINDOW_SILL + 0.12, windowZ - 0.2),
+		WOOD_DARK,
+		Enum.Material.Wood
+	)
+	local shards = {
+		{
+			CFrame.new(WINDOW_X0 + 0.9, WINDOW_TOP - 1.2, windowZ + 1) * CFrame.Angles(0, 0, 0.5),
+			Vector3.new(1.6, 2.4, 0.08),
+		},
+		{
+			CFrame.new(WINDOW_X1 - 0.8, WINDOW_SILL + 1, windowZ + 1) * CFrame.Angles(0, 0, -0.4),
+			Vector3.new(1.4, 1.9, 0.08),
+		},
+		{
+			CFrame.new(windowMid + 1, WINDOW_TOP - 0.6, windowZ + 1) * CFrame.Angles(0, 0, 2.6),
+			Vector3.new(1.1, 1.3, 0.08),
+		},
+	}
+	for _, s in shards do
+		local shard = trim(dressing, "GlassShard", s[2], s[1], Color3.fromRGB(170, 200, 210), Enum.Material.Glass)
+		shard.Transparency = 0.45
+	end
+	exitSign(
+		dressing,
+		CFrame.lookAt(Vector3.new(windowMid, 10.5, windowZ - 0.3), Vector3.new(windowMid, 10.5, windowZ - 10))
+	)
+
+	-- Gym: low bleachers along the north wall and a hoop on the south wall.
+	for step = 1, 3 do
+		box(
+			dressing,
+			"Bleacher",
+			Vector3.new(-60, 0, GYM_Z1 - 6 + (step - 1) * 2),
+			Vector3.new(-44, step, GYM_Z1),
+			WOOD_DARK,
+			Enum.Material.WoodPlanks
+		)
+	end
+	local hoopX = (GYM_X0 + GYM_X1) / 2
+	trim(
+		dressing,
+		"Backboard",
+		Vector3.new(6, 3.5, 0.2),
+		CFrame.new(hoopX, 11.5, GYM_Z0 + 1.5),
+		Color3.fromRGB(200, 200, 196),
+		Enum.Material.SmoothPlastic
+	)
+	trim(
+		dressing,
+		"HoopArm",
+		Vector3.new(0.3, 0.3, 1.4),
+		CFrame.new(hoopX, 11.5, GYM_Z0 + 0.7),
+		STEEL,
+		Enum.Material.Metal
+	)
+	trim(
+		dressing,
+		"Rim",
+		Vector3.new(1.8, 0.15, 1.8),
+		CFrame.new(hoopX, 10, GYM_Z0 + 2.6),
+		Color3.fromRGB(200, 80, 40),
+		Enum.Material.Metal
+	)
+
+	-- Ceiling lamps down the middle of each segment, LAMP_SPACING apart, plus the back corridor, the cross halls,
+	-- the link rooms and the gym; every 4th one (sorted by z) flickers.
 	-- Props tags the lamp Model, but Atmosphere flickers tagged BaseParts, so the tubes are tagged as well.
 	local lampSpots: { Vector3 } = {}
 	for i = 0, 3 do
@@ -576,6 +1070,18 @@ function HallBuilder.build(): Model
 		table.insert(lampSpots, Vector3.new(STEP, WALL_HEIGHT, turn1 + 8 + i * LAMP_SPACING))
 		table.insert(lampSpots, Vector3.new(0, WALL_HEIGHT, turn2 + 8 + i * LAMP_SPACING))
 	end
+	local backMid = (BACK_X0 + BACK_X1) / 2
+	for i = 0, 9 do
+		table.insert(lampSpots, Vector3.new(backMid, WALL_HEIGHT, BACK_Z0 + 6 + i * LAMP_SPACING))
+	end
+	for _, c in CROSS_HALLS do
+		table.insert(lampSpots, Vector3.new(midX, WALL_HEIGHT, (c[1] + c[2]) / 2))
+	end
+	for _, room in LINK_ROOMS do
+		table.insert(lampSpots, Vector3.new(midX, WALL_HEIGHT, room.door + 4))
+	end
+	table.insert(lampSpots, Vector3.new(hoopX, WALL_HEIGHT, 228))
+	table.insert(lampSpots, Vector3.new(hoopX, WALL_HEIGHT, 250))
 	table.sort(lampSpots, function(p, q)
 		return p.Z < q.Z
 	end)
@@ -593,6 +1099,11 @@ function HallBuilder.build(): Model
 
 	-- The exit door stands against the end wall, inside the Exit trigger (z 296..300).
 	Props.exitDoor(dressing, CFrame.lookAt(Vector3.new(0, 0, LENGTH - 0.6), Vector3.new(0, 0, 0)))
+	-- The gym fire exit door stands against the gym's west wall, inside the FireExit trigger.
+	Props.exitDoor(
+		dressing,
+		CFrame.lookAt(Vector3.new(GYM_X0 + 0.6, 0, FIRE_EXIT_Z), Vector3.new(GYM_X0 + 10, 0, FIRE_EXIT_Z))
+	)
 
 	-- Obstacles and hazards: layout 1 until RoundService picks one for a round.
 	HallBuilder.buildLayout(1, hall)
@@ -609,7 +1120,8 @@ function HallBuilder.build(): Model
 	start.TopSurface = Enum.SurfaceType.Smooth
 	start.Parent = hall
 
-	-- Exit is a walk-through trigger spanning the full corridor width at the far end.
+	-- Exit is the main exit: a walk-through trigger spanning the full corridor width at the far end.
+	-- Monster and the specs use it as the hall's far anchor.
 	local exit = box(
 		hall,
 		"Exit",
@@ -620,6 +1132,18 @@ function HallBuilder.build(): Model
 	)
 	exit.CanCollide = false
 	exit.Transparency = 1 -- the exit door and its EXIT sign show where it is
+
+	-- The extra exits. RoundService connects every BasePart in here to the same escape handler as Exit.
+	local exits = Instance.new("Folder")
+	exits.Name = "Exits"
+	exits.Parent = hall
+	exitTrigger(
+		exits,
+		"FireExit",
+		Vector3.new(GYM_X0, 0, FIRE_EXIT_Z - 6),
+		Vector3.new(GYM_X0 + 4, 12, FIRE_EXIT_Z + 6)
+	)
+	exitTrigger(exits, "BrokenWindow", Vector3.new(WINDOW_X0, 0, windowZ - 4), Vector3.new(WINDOW_X1, 10, windowZ))
 
 	hall.Parent = Workspace
 	return hall

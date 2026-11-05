@@ -2,7 +2,12 @@
 -- The blind monster: hunts the loudest player by sound while a round is running.
 -- Reads ReplicatedStorage.State attributes: Noise (0-1) and RoundState, and the InRound player attribute.
 -- It only touches (and kills) while Running; its round connections are dropped when the round ends.
+-- Sprint 36: it walks paths (PathfindingService) instead of through walls, stops to listen when it loses you,
+-- and lunges when it is close to a heard player. Its look comes from Map.MonsterModel; the root part is invisible.
+-- Sprint 37: with nobody heard it patrols random points (PATROL_AREAS) at DRIFT_SPEED instead of standing still,
+-- it enters on the floor instead of at the Exit trigger's mid-height, and there is only ever one Monster/Body.
 
+local PathfindingService = game:GetService("PathfindingService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -47,6 +52,35 @@ local ARRIVE_DISTANCE = 1
 local ENTRY_FALLBACK_Z = 120
 local HALL_WARN_INTERVAL = 30 -- seconds between "still waiting for the hall" warnings
 
+-- Sprint 36 (Routes, Exits and Dread): paths, listening and the lunge.
+local AGENT_RADIUS = 3
+local AGENT_HEIGHT = 9
+local REPATH_INTERVAL = 0.5 -- never computes a path more often than this
+local REPATH_DISTANCE = 8 -- the goal moving this far from where the path was aimed asks for a new one
+local PATH_END_SLACK = 4 -- path used up and the goal is behind a wall but this close: counts as arrived
+local LISTEN_TIME = 2 -- seconds it stands at the last heard spot before drifting
+local LISTEN_TURN_RATE = math.rad(45) -- radians per second it turns while listening
+local LUNGE_RANGE = 15 -- within this flat distance of a heard player it lunges
+local LUNGE_BONUS = 8 -- extra studs/s while lunging
+
+-- Sprint 37 fix: with nobody heard it used to stand still (QA: 20 s at the main exit). Now it patrols at
+-- DRIFT_SPEED, pathfinding to random points in these floor areas. Interiors come from Map/HallBuilder.luau
+-- (main hall segments A/B/C, back corridor, gym), shrunk ~4 studs from each wall so AGENT_RADIUS fits.
+-- The gym stops short of the bleachers along its north wall.
+type Area = { name: string, x0: number, x1: number, z0: number, z1: number }
+local PATROL_AREAS: { Area } = {
+	{ name = "HallA", x0 = -8, x1 = 8, z0 = 4, z1 = 96 },
+	{ name = "HallB", x0 = 4, x1 = 20, z0 = 104, z1 = 196 },
+	{ name = "HallC", x0 = -8, x1 = 8, z0 = 204, z1 = 290 },
+	{ name = "BackCorridor", x0 = -36, x1 = -32, z0 = 38, z1 = 278 },
+	{ name = "Gym", x0 = -66, x1 = -46, z0 = 220, z1 = 250 },
+}
+local PATROL_MIN_LEG = 20 -- a new patrol point is at least this far away (flat), so it walks somewhere
+local PATROL_PICK_TRIES = 8
+local STUCK_CHECK = 5 -- seconds; patrolling and moved under STUCK_MOVE in that time picks a new point
+local STUCK_MOVE = 2
+local ENTRY_INSET = 6 -- enters this far in from the Exit toward Start, clear of the end wall
+
 type Sample = { root: BasePart, position: Vector3, speed: number }
 
 local started = false
@@ -64,11 +98,19 @@ local function buildMonster(hall: Instance): Part
 	body.Size = Vector3.new(SIZE, SIZE, SIZE)
 	body.Color = Color3.fromRGB(70, 8, 8)
 	body.Material = Enum.Material.SmoothPlastic
+	body.Transparency = 1 -- Map.MonsterModel is the visible creature
 	body.Anchored = true
 	body.CanCollide = false
 	body.CanTouch = false -- turned on only while a round is Running
-	body.CastShadow = true
+	body.CastShadow = false
+	body.Parent = hall
+	return body
+end
 
+-- Fallback look if Map.MonsterModel is missing or fails: the old red cube with glowing eyes.
+local function addFallbackLook(body: Part)
+	body.Transparency = 0
+	body.CastShadow = true
 	for _, side in { -1, 1 } do
 		local eye = Instance.new("Part")
 		eye.Name = "Eye"
@@ -86,9 +128,24 @@ local function buildMonster(hall: Instance): Part
 		weld.Parent = eye
 		eye.Parent = body
 	end
+end
 
-	body.Parent = hall
-	return body
+-- Exactly one Body: attach already replaces its own Body, and anything else named Body is removed too.
+-- (QA's "75 parts" was 75 descendants: 37 parts, 37 WeldConstraints and the Model.)
+local function attachModel(body: Part)
+	local ok, err = pcall(function()
+		local MonsterModel = require(script.Parent.Map.MonsterModel) :: any
+		local model = MonsterModel.attach(body)
+		for _, child in body:GetChildren() do
+			if child.Name == "Body" and child ~= model then
+				child:Destroy()
+			end
+		end
+	end)
+	if not ok then
+		warn(`[Monster] MonsterModel.attach failed, using the fallback cube: {err}`)
+		addFallbackLook(body)
+	end
 end
 
 -- 3D sound on the monster's body. Returns nil (with a warning) if it can't be made; a SoundId that fails to
@@ -152,18 +209,67 @@ local function parkPosition(hall: Instance): Vector3
 	return startPos + Vector3.new(0, 0, 250)
 end
 
+-- Standing height: the root's centre when its bottom is on the floor.
+local function onFloor(pos: Vector3): Vector3
+	return Vector3.new(pos.X, FLOOR_Y + SIZE / 2, pos.Z)
+end
+
 -- Where the monster enters the hall when a round starts (the parked spot is out of earshot).
+-- Sprint 37 fix: it used the Exit trigger's centre, which is Y 10 (the trigger spans Y 0..20) and 2 studs off
+-- the end wall, so it hung in the air at (0, 10, 298). Now it stands on the floor, ENTRY_INSET in toward Start.
 local function entryPosition(hall: Instance): Vector3
 	local exitPos = anchorPosition(hall:FindFirstChild("Exit"))
 	if exitPos then
-		return exitPos
+		local startPos = anchorPosition(hall:FindFirstChild("Start"))
+		local inward = Vector3.zero
+		if startPos then
+			local flat = Vector3.new(startPos.X - exitPos.X, 0, startPos.Z - exitPos.Z)
+			if flat.Magnitude > ENTRY_INSET then
+				inward = flat.Unit * ENTRY_INSET
+			end
+		end
+		return onFloor(exitPos + inward)
 	end
 	local startPos = anchorPosition(hall:FindFirstChild("Start")) or Vector3.zero
-	return startPos + Vector3.new(0, 0, ENTRY_FALLBACK_Z)
+	return onFloor(startPos + Vector3.new(0, 0, ENTRY_FALLBACK_Z))
 end
 
 local function clampY(pos: Vector3): Vector3
 	return Vector3.new(pos.X, math.max(pos.Y, FLOOR_Y + SIZE / 2), pos.Z)
+end
+
+local function flatDistance(a: Vector3, b: Vector3): number
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+-- A random standing spot in a random PATROL_AREAS entry, at least PATROL_MIN_LEG from `from` when it can.
+local function patrolPoint(from: Vector3, rng: Random): Vector3
+	local point = from
+	for _ = 1, PATROL_PICK_TRIES do
+		local area = PATROL_AREAS[rng:NextInteger(1, #PATROL_AREAS)]
+		point = onFloor(Vector3.new(rng:NextNumber(area.x0, area.x1), 0, rng:NextNumber(area.z0, area.z1)))
+		if flatDistance(point, from) >= PATROL_MIN_LEG then
+			break
+		end
+	end
+	return point
+end
+
+-- Chase speed: faster the louder the hall is, plus the lunge bonus when within LUNGE_RANGE.
+local function chaseSpeed(level: number, distance: number): number
+	return BASE_SPEED + level * NOISE_SPEED + (if distance <= LUNGE_RANGE then LUNGE_BONUS else 0)
+end
+
+-- Whether a new path should be computed now. Throttled to REPATH_INTERVAL; then it is needed when there is no
+-- path aim yet, the last one failed, or the goal moved REPATH_DISTANCE or more from where the path was aimed.
+local function shouldRepath(now: number, lastCompute: number, aim: Vector3?, goal: Vector3, failed: boolean): boolean
+	if now - lastCompute < REPATH_INTERVAL then
+		return false
+	end
+	if aim == nil or failed then
+		return true
+	end
+	return flatDistance(aim, goal) >= REPATH_DISTANCE
 end
 
 local function aliveRoot(player: Player): BasePart?
@@ -272,11 +378,158 @@ end
 -- Builds the monster in the hall and follows RoundState from then on.
 local function run(hall: Instance)
 	local state = GameState.State
+	-- Only one monster: drop any left in the hall (e.g. saved into the place from an old playtest).
+	for _, child in hall:GetChildren() do
+		if child.Name == "Monster" then
+			child:Destroy()
+		end
+	end
 	local body = buildMonster(hall)
-	body.CFrame = CFrame.new(clampY(parkPosition(hall)))
+	body.CFrame = CFrame.new(onFloor(parkPosition(hall)))
+	attachModel(body)
 
 	local lastHeard: Vector3? = nil
+	local listenUntil: number? = nil
 	local connections: { RBXScriptConnection } = {}
+
+	-- Path state. One Path object; only one ComputeAsync runs at a time (computing).
+	local path = PathfindingService:CreatePath({
+		AgentRadius = AGENT_RADIUS,
+		AgentHeight = AGENT_HEIGHT,
+		AgentCanJump = false,
+		AgentCanClimb = false,
+	})
+	local generation = 0 -- bumped at round end so a late path result from the old round is dropped
+	local computing = false
+	local lastCompute = -math.huge
+	local pathAim: Vector3? = nil -- the goal the current (or pending) path was computed for
+	local waypoints: { Vector3 }? = nil
+	local waypointIndex = 1
+	local pathFailed = false
+	local pathWarned = false
+
+	-- Patrol state (Sprint 37).
+	local rng = Random.new()
+	local mode: "chase" | "drift" | "patrol" | "listen" | nil = nil
+	local patrolGoal: Vector3? = nil
+	local stuckFrom = Vector3.zero
+	local stuckAt = 0
+
+	-- Drops the current path. Bumping generation also drops a path still being computed for the old goal,
+	-- so it can't land as the waypoints for a new one.
+	local function clearPath()
+		generation += 1
+		pathAim = nil
+		waypoints = nil
+		waypointIndex = 1
+		pathFailed = false
+		lastCompute = -math.huge
+	end
+
+	local function setMode(newMode: "chase" | "drift" | "patrol" | "listen" | nil, now: number)
+		if newMode == mode then
+			return
+		end
+		mode = newMode
+		clearPath()
+		patrolGoal = nil
+		stuckFrom = body.Position
+		stuckAt = now
+	end
+
+	local function requestPath(goal: Vector3, now: number)
+		if computing then
+			return
+		end
+		computing = true
+		lastCompute = now
+		pathAim = goal
+		local requestGeneration = generation
+		local from = body.Position
+		task.spawn(function()
+			local ok, err = pcall(function()
+				path:ComputeAsync(from, goal)
+			end)
+			computing = false
+			if requestGeneration ~= generation then
+				return
+			end
+			if ok and path.Status == Enum.PathStatus.Success then
+				local points = {}
+				for _, waypoint in path:GetWaypoints() do
+					table.insert(points, waypoint.Position)
+				end
+				waypoints = points
+				-- The first waypoint is where it already stands.
+				waypointIndex = if #points >= 2 then 2 else 1
+				pathFailed = false
+			else
+				if not ok and not pathWarned then
+					pathWarned = true
+					warn(`[Monster] path compute failed, moving directly: {err}`)
+				end
+				waypoints = nil
+				pathFailed = true
+			end
+		end)
+	end
+
+	-- True when nothing solid stands between the monster and the goal (players and the monster are ignored).
+	local function hasClearLine(from: Vector3, goal: Vector3): boolean
+		local ignore: { Instance } = { body }
+		for _, player in Players:GetPlayers() do
+			if player.Character then
+				table.insert(ignore, player.Character)
+			end
+		end
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = ignore
+		params.RespectCanCollide = true
+		local direction = Vector3.new(goal.X, from.Y, goal.Z) - from
+		return workspace:Raycast(from, direction, params) == nil
+	end
+
+	-- Moves one step toward goal along the path. Returns true once it has arrived.
+	-- Moves straight at the goal only when the path failed (and allowDirect), or when the path is used up and
+	-- the line is clear. Patrol passes allowDirect = false and picks another point instead.
+	local function navigate(goal: Vector3, speed: number, dt: number, now: number, allowDirect: boolean): boolean
+		local position = body.Position
+		if flatDistance(position, goal) <= ARRIVE_DISTANCE then
+			return true
+		end
+		if shouldRepath(now, lastCompute, pathAim, goal, pathFailed) then
+			requestPath(goal, now)
+		end
+		if pathFailed then
+			if allowDirect then
+				return moveToward(body, goal, speed, dt)
+			end
+			return false
+		end
+		local points = waypoints
+		if not points then
+			return false -- the first path is still being computed: hold still rather than cut through walls
+		end
+		while waypointIndex <= #points do
+			local point = points[waypointIndex] + Vector3.new(0, SIZE / 2, 0)
+			if flatDistance(position, point) <= ARRIVE_DISTANCE then
+				waypointIndex += 1
+			else
+				moveToward(body, point, speed, dt)
+				return false
+			end
+		end
+		-- Path used up but the goal is not reached (it moved, or the path ended just short).
+		if hasClearLine(position, goal) then
+			return moveToward(body, goal, speed, dt)
+		end
+		if flatDistance(position, goal) <= PATH_END_SLACK then
+			return true
+		end
+		pathAim = nil -- ask for a fresh path at the next allowed time
+		return false
+	end
 
 	local growl = makeSound(body, "Growl", SOUNDS.Growl, true, GROWL_ROLLOFF_MAX)
 	local scream = makeSound(body, "Scream", SOUNDS.Scream, false, SCREAM_ROLLOFF_MAX)
@@ -316,27 +569,72 @@ local function run(hall: Instance)
 
 	local function onHeartbeat(dt: number)
 		sampleSpeeds()
+		local now = os.clock()
 
 		local noise = state:GetAttribute("Noise")
 		local level = math.clamp(if typeof(noise) == "number" then noise else 0, 0, 1)
 
+		local target: Vector3? = nil
 		if level < QUIET_NOISE then
-			-- Silence: drift to where it last heard someone, then wait there.
-			setGrowlChasing(false)
-			table.clear(heardSince)
-			if lastHeard and moveToward(body, lastHeard, DRIFT_SPEED, dt) then
+			table.clear(heardSince) -- silence: nobody is heard
+		else
+			target = findLoudest(body.Position)
+		end
+		setGrowlChasing(target ~= nil)
+
+		if target then
+			listenUntil = nil -- hearing someone ends a listen pause at once
+			lastHeard = target
+			setMode("chase", now)
+			navigate(target, chaseSpeed(level, flatDistance(body.Position, target)), dt, now, true)
+			return
+		end
+
+		local until_ = listenUntil
+		if until_ then
+			-- Lost them: stand at the last heard spot and slowly turn, listening.
+			if now < until_ then
+				setMode("listen", now)
+				body.CFrame = body.CFrame * CFrame.Angles(0, LISTEN_TURN_RATE * dt, 0)
+				return
+			end
+			listenUntil = nil
+		end
+
+		-- Drift to where it last heard someone, then listen there for LISTEN_TIME.
+		local heardSpot = lastHeard
+		if heardSpot then
+			setMode("drift", now)
+			if navigate(heardSpot, DRIFT_SPEED, dt, now, true) then
 				lastHeard = nil
+				listenUntil = now + LISTEN_TIME
+				setMode("listen", now)
 			end
 			return
 		end
 
-		local target = findLoudest(body.Position)
-		setGrowlChasing(target ~= nil)
-		if target then
-			lastHeard = target
-			moveToward(body, target, BASE_SPEED + level * NOISE_SPEED, dt)
-		elseif lastHeard and moveToward(body, lastHeard, DRIFT_SPEED, dt) then
-			lastHeard = nil
+		-- Nothing heard: patrol to random points across the hall, corridor and gym.
+		setMode("patrol", now)
+		local position = body.Position
+		if now - stuckAt >= STUCK_CHECK then
+			if patrolGoal and flatDistance(position, stuckFrom) < STUCK_MOVE then
+				patrolGoal = nil -- stalled (unreachable point or a bad path): pick another
+				clearPath()
+			end
+			stuckFrom = position
+			stuckAt = now
+		end
+		local goal = patrolGoal
+		if goal == nil or pathFailed then
+			if pathFailed then
+				clearPath()
+			end
+			goal = patrolPoint(position, rng)
+			patrolGoal = goal
+		end
+		if navigate(goal, DRIFT_SPEED, dt, now, false) then
+			patrolGoal = nil
+			clearPath()
 		end
 	end
 
@@ -349,8 +647,12 @@ local function run(hall: Instance)
 		table.clear(heardSince)
 		sampler.clear()
 		lastHeard = nil
+		listenUntil = nil
+		mode = nil
+		patrolGoal = nil
+		clearPath() -- also bumps generation, so a late path result from this round is dropped
 		body.CanTouch = false
-		body.CFrame = CFrame.new(clampY(parkPosition(hall)))
+		body.CFrame = CFrame.new(onFloor(parkPosition(hall)))
 		setGrowlChasing(false)
 		safeSound(growl, function(sound)
 			sound:Stop()
@@ -359,7 +661,7 @@ local function run(hall: Instance)
 
 	local function beginRound()
 		endRound()
-		body.CFrame = CFrame.new(clampY(entryPosition(hall)))
+		body.CFrame = CFrame.new(entryPosition(hall))
 		body.CanTouch = true
 		table.insert(connections, body.Touched:Connect(onTouched))
 		table.insert(connections, RunService.Heartbeat:Connect(onHeartbeat))
@@ -397,6 +699,23 @@ if RunService:IsStudio() then
 		SOUNDS = SOUNDS,
 		GROWL_VOLUME_DRIFT = GROWL_VOLUME_DRIFT,
 		GROWL_VOLUME_CHASE = GROWL_VOLUME_CHASE,
+		-- Sprint 36
+		chaseSpeed = chaseSpeed,
+		shouldRepath = shouldRepath,
+		BASE_SPEED = BASE_SPEED,
+		NOISE_SPEED = NOISE_SPEED,
+		LISTEN_TIME = LISTEN_TIME,
+		LUNGE_RANGE = LUNGE_RANGE,
+		LUNGE_BONUS = LUNGE_BONUS,
+		REPATH_INTERVAL = REPATH_INTERVAL,
+		REPATH_DISTANCE = REPATH_DISTANCE,
+		-- Sprint 37
+		patrolPoint = patrolPoint,
+		entryPosition = entryPosition,
+		PATROL_AREAS = PATROL_AREAS,
+		PATROL_MIN_LEG = PATROL_MIN_LEG,
+		DRIFT_SPEED = DRIFT_SPEED,
+		STANDING_Y = FLOOR_Y + SIZE / 2,
 	}
 end
 

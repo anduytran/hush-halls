@@ -38,6 +38,16 @@ if not exitPart then
 	exitPart.Parent = hall
 end
 
+-- Sprint 37: patrol pathfinds, so the test world needs something to walk on. Covers every PATROL_AREAS rect.
+if not hall:FindFirstChild("Floor") then
+	local floor = Instance.new("Part")
+	floor.Name = "Floor"
+	floor.Anchored = true
+	floor.Size = Vector3.new(100, 2, 320)
+	floor.Position = Vector3.new(-23, -1, 145) -- top at Y 0, x -73..27, z -15..305
+	floor.Parent = hall
+end
+
 Monster.start()
 
 local function monsterBody(): BasePart
@@ -206,6 +216,50 @@ return {
 		assert(test.HEARD_SPEED < test.SPRINT_SPEED, "the heard threshold should sit below the sprint threshold")
 	end,
 
+	["root part stays named Monster and is invisible"] = function()
+		local body = monsterBody()
+		assert(body.Name == "Monster", "root should be named Monster")
+		-- If MonsterModel failed the fallback cube is visible; only check when a model was attached.
+		if body:FindFirstChildOfClass("Model") then
+			assert(body.Transparency == 1, "root should be invisible when the model is attached")
+		end
+	end,
+
+	["lunge adds LUNGE_BONUS within LUNGE_RANGE only"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		assert(test.LUNGE_RANGE == 15, "expected LUNGE_RANGE 15")
+		assert(test.LUNGE_BONUS == 8, "expected LUNGE_BONUS 8")
+		local far = test.chaseSpeed(0.5, 40)
+		assert(far == test.BASE_SPEED + 0.5 * test.NOISE_SPEED, "no lunge at 40 studs")
+		assert(test.chaseSpeed(0.5, 15) == far + 8, "lunge at exactly 15 studs")
+		assert(test.chaseSpeed(0.5, 5) == far + 8, "lunge at 5 studs")
+		assert(test.chaseSpeed(0.5, 15.5) == far, "no lunge just past 15 studs")
+	end,
+
+	["LISTEN_TIME is 2 seconds"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		assert(Monster._test.LISTEN_TIME == 2, "expected LISTEN_TIME 2")
+	end,
+
+	["repaths at most every 0.5 s and when the goal moves 8+ studs"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local repath = Monster._test.shouldRepath
+		local aim = Vector3.new(0, 3, 0)
+		assert(repath(10, -math.huge, nil, aim, false) == true, "no path yet should repath")
+		assert(repath(10, 9.8, nil, aim, false) == false, "throttled under 0.5 s")
+		assert(repath(10, 9.5, aim, Vector3.new(7, 3, 0), false) == false, "goal moved 7: keep the path")
+		assert(repath(10, 9.5, aim, Vector3.new(8, 3, 0), false) == true, "goal moved 8: repath")
+		assert(repath(10, 9.9, aim, Vector3.new(30, 3, 0), false) == false, "big move still throttled")
+		assert(repath(10, 9.5, aim, aim, true) == true, "a failed path retries after the throttle")
+	end,
+
 	["has a looping 3D growl and a one-shot scream on the body"] = function()
 		local body = monsterBody()
 		local growl = body:FindFirstChild("Growl")
@@ -234,5 +288,70 @@ return {
 		state:SetAttribute("RoundState", "Lobby")
 		task.wait(0.2)
 		assert(growl.Playing == false, "growl should stop outside Running")
+	end,
+
+	-- Sprint 37: QA saw it hang at the Exit trigger's centre (0, 10, 298) and never move.
+	["enters standing on the floor, not at the Exit trigger's mid-height"] = function()
+		state:SetAttribute("RoundState", "Running")
+		task.wait(0.2)
+		local body = monsterBody()
+		assert(math.abs(body.Position.Y - 3) < 0.01, "expected the root at standing height 3, got " .. body.Position.Y)
+		state:SetAttribute("RoundState", "Lobby")
+	end,
+
+	["patrols when nobody is heard"] = function()
+		state:SetAttribute("Noise", 0)
+		state:SetAttribute("RoundState", "Running")
+		task.wait(0.3)
+		local body = monsterBody()
+		local from = body.Position
+		task.wait(6)
+		local moved = flatDistance(body.Position, from)
+		state:SetAttribute("RoundState", "Lobby")
+		assert(moved >= 3, "expected the monster to patrol with nobody heard, it moved " .. tostring(moved))
+	end,
+
+	["patrol points are on the floor inside the hall, corridor and gym areas"] = function()
+		if not RunService:IsStudio() then
+			return
+		end
+		local test = Monster._test
+		local rng = Random.new(37)
+		local seen = {}
+		local origin = Vector3.new(0, 3, 50)
+		for _ = 1, 300 do
+			local p = test.patrolPoint(origin, rng)
+			assert(p.Y == test.STANDING_Y, "patrol point should be at standing height, got " .. p.Y)
+			local inside = false
+			for _, a in test.PATROL_AREAS do
+				if p.X >= a.x0 and p.X <= a.x1 and p.Z >= a.z0 and p.Z <= a.z1 then
+					inside = true
+					seen[a.name] = true
+				end
+			end
+			assert(inside, "patrol point outside every area: " .. tostring(p))
+			assert(flatDistance(p, origin) >= test.PATROL_MIN_LEG, "patrol leg too short: " .. tostring(p))
+		end
+		for _, a in test.PATROL_AREAS do
+			assert(seen[a.name], "no patrol point landed in " .. a.name)
+		end
+	end,
+
+	["exactly one Monster under Hall with exactly one Body"] = function()
+		local count = 0
+		for _, child in hall:GetChildren() do
+			if child.Name == "Monster" then
+				count += 1
+			end
+		end
+		assert(count == 1, "expected one Monster under Hall, got " .. count)
+		local bodies = 0
+		for _, child in monsterBody():GetChildren() do
+			if child.Name == "Body" then
+				bodies += 1
+			end
+		end
+		-- 0 only when MonsterModel failed and the fallback cube is in use.
+		assert(bodies <= 1, "expected at most one Body model, got " .. bodies)
 	end,
 }

@@ -18,8 +18,8 @@ Always-on round info while sneaking through the hall: how long is left, how high
 ## Elements
 - RoundInfo: `State.RoundState` + `State.TimeLeft` as m:ss; shows "Waiting" until State exists
 - GoalPanel / GoalText: objective line in its own panel (same style as RoundInfo), 4 px under RoundInfo and following its real height. Same width as RoundInfo (0.28 scale, 160–360 px) so on a 375 px phone it stays in the centre column clear of Coins and the Shop button; height 0.08 scale (44–64 px) fits two wrapped lines. TextScaled + wrapped, 14–20 px. Follows `State.RoundState` and `LocalPlayer.Escaped`:
-  - Lobby / unset: "Next round soon. Reach the EXIT."
-  - Running: "Reach the EXIT. Sprinting is loud."
+  - Lobby / unset: "Next round soon. Find an exit."
+  - Running: "Find an exit. Sprinting is loud." (there are three exits since sprint 36)
   - Running + Escaped: "You escaped! Wait for the next round." in green
   - Ended: "Round over."
 - WaterBar: fill = `State.WaterLevel / 20`, clamped 0–1

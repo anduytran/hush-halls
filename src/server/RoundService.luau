@@ -1,7 +1,8 @@
 --!strict
 -- Round loop: Lobby (15s) -> Running (up to 120s) -> Ended (5s) -> Lobby. Studio specs can shorten these
 -- with RoundService._test.setDurations.
--- Players who touch Hall.Exit while Running escape: +10 Coins and a teleport to the lobby platform above Start.
+-- Players who touch Hall.Exit (or any part in Hall.Exits) while Running escape, once per round: +10 Coins and a
+-- teleport to the lobby platform above Start.
 -- Player attribute InRound is true while a participant is alive and hasn't escaped; Monster and NoiseService
 -- only hear, kill and drown InRound players.
 -- Sprint 34: each round starts by rebuilding the hall's obstacles and hazards with a random layout
@@ -296,6 +297,16 @@ function RoundService.start()
 			sendToPlatform(player)
 		end
 
+		-- Sprint 36: the main Exit plus every BasePart in Hall.Exits (fire exit, broken window) share this handler.
+		-- Escaped/InRound are set before the reward, so isActive stops a second escape through another exit.
+		local extra = hall:FindFirstChild("Exits")
+		if extra then
+			for _, part in extra:GetChildren() do
+				if part:IsA("BasePart") then
+					table.insert(connections, source.connectExit(part, onTouched))
+				end
+			end
+		end
 		table.insert(connections, source.connectExit(exit, onTouched))
 	end)
 

@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-05 — Sprint 36: routes, 3 exits, a pathfinding monster
+What: the hall now branches (back corridor, cross halls, through-classrooms, gym) and has 3 exits. The monster uses PathfindingService, patrols when it hears nothing, pauses 2 s to listen and lunges within 15 studs. Client dread effects and a jumpscare were added. Why: route choice against a monster you can hear is a real decision, and before this it slid through walls. Alternatives: hand-placed waypoints (brittle across 3 layouts); standing idle when nothing is heard (QA found it felt dead, so we switched to patrol).
+
 ## 2026-11-05 — Sprint 35: the halls are a flooded school
 - **The map was re-dressed as an abandoned school at night**, not pool rooms, so it looks clearly different from DONT SPLASH. The footprint, turns and layouts were kept so the balance and the monster/round code didn't change. Alternative considered: a new longer or branching route; deferred because it would need retuning the water and monster.
 
