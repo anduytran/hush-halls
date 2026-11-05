@@ -10,5 +10,6 @@
 | Hazards and layouts | in-progress (built sprint 34, puddles playtested; planks and monster reaction need a playtest) | [[Mechanics/Hazards and Layouts]] |
 | Map overhaul (flooded school) | in-progress (built sprint 35, 2 live rounds OK; phone performance unchecked) | [[Mechanics/Map Overhaul]] |
 | Routes, exits and dread | in-progress (built sprint 36, server playtested; dread effects need a client check) | [[Mechanics/Routes, Exits and Dread]] |
+| Movement tech and bigger school | in-progress (built sprint 39, playtested; monster reaction and touch buttons unchecked) | [[Mechanics/Movement Tech]] |
 
 Copy [[Mechanics/_Template]] for new ones.

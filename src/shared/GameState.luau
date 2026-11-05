@@ -11,7 +11,7 @@ local DEFAULTS: { [string]: any } = {
 	TimeLeft = 0,
 }
 
-local REMOTE_EVENTS = { "Sprint" }
+local REMOTE_EVENTS = { "Sprint", "Move" }
 
 local State: Folder
 local Remotes: Folder

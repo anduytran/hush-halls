@@ -16,8 +16,12 @@ Done (history in git log):
 - [x] Sprint 36: [[Mechanics/Routes, Exits and Dread]]. A back corridor, cross halls, through-classrooms and a gym give several routes. There are 3 exits (main door, gym fire exit, broken window). The monster is now a gaunt eyeless creature that pathfinds, patrols, listens and lunges. On the client, vignette, shake and FOV build as it closes in, and a catch shows a jumpscare. Parts are down to about 1,900 per build.
 - [x] Sprint 37: the monster is animated on the client (lurching walk, lean and reach on chase, head tilts while listening, jaw snaps).
 - [x] Sprint 38: 4 random spawn points per layout (`Hall.Starts`). Players are spread across them, and each is 226 or more studs from an exit.
+- [x] Sprint 39: [[Mechanics/Movement Tech]]. The school is about 1.7× longer (446–519 studs to an exit), the round is 180 s, and there's Deadlock-style movement (stamina pips, dash, slide, double jump and wall jump), with every move making noise.
+- [x] Sprint 40: procedural animations for every move (dash, dash jump, slide, slide hop, double-jump flip, wall-jump push-off), shown to other players through a server attribute.
 
 ## Needs a playtest
+- Sprint 40: move animations seen from a second client; R6 rigs. Follow-up: send SlideHop and the slide's end to the server so other players see them exactly.
+- Sprint 39: the monster turning toward a dash; the DASH/SLIDE buttons on a phone; the HUD pips draining; whether the movement feels good; the NoiseService spec still assumes a 120 s round; ui-vault/Screens/HUD.md doesn't describe the pips and buttons yet.
 - Sprint 38: spawn spreading with two real clients; the RoundService spec skips itself during a live round, so it needs running from an idle server.
 - Sprint 37: monster animations during real play (chase, listen and kill states coming from the server), and a client joining mid-round.
 - Sprint 36: dread effects and jumpscare on a real client; a real catch by the new monster; Studio has stale duplicate copies of MonsterModel, Props, Atmosphere and Hazards to delete (they may be the source of the 203785492 warning).

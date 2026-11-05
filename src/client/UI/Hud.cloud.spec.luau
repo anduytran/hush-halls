@@ -17,7 +17,10 @@ if not player then
 end
 
 local LOBBY_TEXT = "Next round soon. Find an exit."
-local RUNNING_TEXT = "Find an exit. Sprinting is loud."
+local RUNNING_TOUCH_TEXT = "Find an exit. Sprinting is loud."
+local RUNNING_KEYBOARD_TEXT = "Find an exit. Q dash, C slide."
+-- setGoal without a keyboard argument follows KeyboardEnabled
+local RUNNING_TEXT = if UserInputService.KeyboardEnabled then RUNNING_KEYBOARD_TEXT else RUNNING_TOUCH_TEXT
 local ENDED_TEXT = "Round over."
 local ESCAPED_TEXT = "You escaped! Wait for the next round."
 
@@ -132,11 +135,17 @@ local function checkPhoneLayout(viewport: Frame, panels: { [string]: GuiObject }
 	end
 	-- Coins and the Shop button share the right-hand column; the goal line must stay clear of its left edge
 	assert(max.X < panels.Coins.AbsolutePosition.X - origin.X, "GoalPanel reaches into the Coins/Shop column")
-	for _, case in CASES do
-		phoneHooks.setGoal(case.round, case.escaped)
-		settle()
-		assert(phoneGoal.TextFits, `"{phoneGoal.Text}" does not fit the GoalPanel on a 375x667 phone`)
+	for _, keyboard in { true, false } do
+		for _, case in CASES do
+			phoneHooks.setGoal(case.round, case.escaped, keyboard)
+			settle()
+			assert(phoneGoal.TextFits, `"{phoneGoal.Text}" does not fit the GoalPanel on a 375x667 phone`)
+		end
 	end
+end
+
+local function near(a: number, b: number): boolean
+	return math.abs(a - b) < 1e-3
 end
 
 -- Mounts a throwaway HUD and hands it to body with its test hooks. The HUD is always destroyed afterwards,
@@ -437,6 +446,166 @@ return {
 						assert(t.TextFits, `{size}: "{t.Text}" does not fit the TitleCard`)
 					end
 				end
+			end)
+			cleanup()
+			if not ok then
+				error(err, 0)
+			end
+		end
+		assert(gui.Parent == liveParent and goalPanel.Parent == gui, "phone test must not move the live HUD")
+	end,
+
+	["running goal line names Q dash and C slide on keyboard only"] = function()
+		withThrowaway(function(throwaway, hooks)
+			local text = (throwaway:FindFirstChild("GoalPanel") :: Frame):FindFirstChild("GoalText") :: TextLabel
+			hooks.setGoal("Running", false, true)
+			assert(text.Text == RUNNING_KEYBOARD_TEXT, `keyboard running text is "{text.Text}"`)
+			assert(string.find(text.Text, "Q dash, C slide", 1, true), "keyboard text should mention Q dash, C slide")
+			hooks.setGoal("Running", false, false)
+			assert(text.Text == RUNNING_TOUCH_TEXT, `touch running text is "{text.Text}"`)
+		end)
+	end,
+
+	["stamina bar has 3 pips and is hidden outside a round"] = function()
+		withThrowaway(function(throwaway, hooks)
+			local bar = throwaway:FindFirstChild("StaminaBar") :: Frame
+			assert(bar, "StaminaBar missing")
+			for i = 1, 3 do
+				assert(bar:FindFirstChild("Pip" .. i), `Pip{i} missing`)
+			end
+			assert(not bar:FindFirstChild("Pip4"), "StaminaBar should have exactly 3 pips")
+			hooks.forceInRound(false)
+			assert(not bar.Visible, "StaminaBar visible outside a round")
+			hooks.forceInRound(true)
+			assert(bar.Visible, "StaminaBar hidden in a round")
+			hooks.forceInRound(nil)
+			assert(
+				bar.Visible == (player:GetAttribute("InRound") == true),
+				"StaminaBar visibility should follow InRound once the override is cleared"
+			)
+		end)
+	end,
+
+	["stamina pips fill fractionally and flash when spent"] = function()
+		withThrowaway(function(throwaway, hooks)
+			hooks.forceInRound(true)
+			local bar = throwaway:FindFirstChild("StaminaBar") :: Frame
+			local function flashOf(i: number): Frame
+				return (bar:FindFirstChild("Pip" .. i) :: Frame):FindFirstChild("Flash") :: Frame
+			end
+			hooks.setStamina(3)
+			settle(1)
+			local fills = hooks.pipFills()
+			assert(near(fills[1], 1) and near(fills[2], 1) and near(fills[3], 1), "3 stamina should fill all pips")
+			for i = 1, 3 do
+				assert(flashOf(i).BackgroundTransparency > 0.99, `Pip{i} flashing at rest`)
+			end
+
+			-- A dash: 3 -> 2, the third pip is spent and flashes, the others stay full and unflashed
+			hooks.setStamina(2)
+			fills = hooks.pipFills()
+			assert(near(fills[3], 0), `third pip should be empty, is {fills[3]}`)
+			assert(flashOf(3).BackgroundTransparency < 0.5, "spent pip should flash")
+			assert(flashOf(1).BackgroundTransparency > 0.99, "unspent pip flashed")
+
+			-- Regenerating: 2.4 fills the third pip partly, dimmer than a full one
+			hooks.setStamina(2.4)
+			fills = hooks.pipFills()
+			assert(near(fills[3], 0.4), `third pip should be 0.4 full, is {fills[3]}`)
+			local fill3 = (bar:FindFirstChild("Pip3") :: Frame):FindFirstChild("Fill") :: Frame
+			local fill1 = (bar:FindFirstChild("Pip1") :: Frame):FindFirstChild("Fill") :: Frame
+			assert(near(fill3.Size.X.Scale, 0.4), `third pip Fill width is {fill3.Size.X.Scale}`)
+			assert(fill3.BackgroundTransparency > fill1.BackgroundTransparency, "partial pip should be dimmer")
+
+			-- The flash fades away
+			task.wait(0.6)
+			assert(flashOf(3).BackgroundTransparency > 0.99, "flash did not fade")
+
+			-- Out-of-range and missing values clamp
+			hooks.setStamina(-1)
+			fills = hooks.pipFills()
+			assert(near(fills[1], 0) and near(fills[3], 0), "negative stamina should empty all pips")
+			hooks.setStamina(nil)
+			fills = hooks.pipFills()
+			assert(near(fills[1], 1) and near(fills[3], 1), "missing stamina should read as full")
+		end)
+	end,
+
+	["DASH and SLIDE show only on touch in a round"] = function()
+		withThrowaway(function(throwaway, hooks)
+			local dash = throwaway:FindFirstChild("DashButton") :: TextButton
+			local slide = throwaway:FindFirstChild("SlideButton") :: TextButton
+			assert(dash and dash:IsA("TextButton") and dash.Text == "DASH", "DashButton missing")
+			assert(slide and slide:IsA("TextButton") and slide.Text == "SLIDE", "SlideButton missing")
+			hooks.forceTouch(true)
+			hooks.forceInRound(false)
+			assert(not dash.Visible and not slide.Visible, "movement buttons visible outside a round")
+			hooks.forceInRound(true)
+			assert(dash.Visible and slide.Visible, "movement buttons hidden on touch in a round")
+			hooks.forceTouch(false)
+			assert(not dash.Visible and not slide.Visible, "movement buttons visible without touch")
+			local sprint = throwaway:FindFirstChild("SprintButton") :: TextButton
+			for _, b in { dash, slide } do
+				assert(b.BackgroundColor3 == sprint.BackgroundColor3, `{b.Name} should match the SprintButton colour`)
+				assert(b.FontFace == sprint.FontFace, `{b.Name} should use the SprintButton font`)
+			end
+		end)
+	end,
+
+	["tapping DASH and SLIDE calls Movement, and a failing Movement does not throw"] = function()
+		withThrowaway(function(_, hooks)
+			local calls = {}
+			hooks.setMovement({
+				dash = function()
+					table.insert(calls, "dash")
+				end,
+				slide = function()
+					table.insert(calls, "slide")
+				end,
+			})
+			assert(hooks.tapDash() == true and hooks.tapSlide() == true, "stand-in Movement calls should succeed")
+			assert(calls[1] == "dash" and calls[2] == "slide" and #calls == 2, "wrong Movement calls")
+			hooks.setMovement({
+				dash = function()
+					error("boom")
+				end,
+			})
+			local ok, result = pcall(hooks.tapDash)
+			assert(ok and result == false, "a failing dash() should be caught and reported as false")
+			local ok2, result2 = pcall(hooks.tapSlide)
+			assert(ok2 and result2 == false, "a missing slide() should be caught and reported as false")
+		end)
+	end,
+
+	["on portrait and landscape phones DASH and SLIDE are tappable and overlap nothing"] = function()
+		local liveParent = gui.Parent
+		for _, size in { Vector2.new(375, 667), Vector2.new(667, 375) } do
+			local viewport, panels, phoneHooks, cleanup = phoneViewport(size.X, size.Y)
+			local ok, err = pcall(function()
+				phoneHooks.forceTouch(true)
+				phoneHooks.forceInRound(true)
+				settle(5)
+				for _, name in { "DashButton", "SlideButton", "StaminaBar" } do
+					local g = panels[name]
+					assert(g and g.Visible, `{size}: {name} not shown`)
+					local min, max = rect(g, viewport.AbsolutePosition)
+					assert(
+						min.X >= 0 and min.Y >= 0 and max.X <= size.X and max.Y <= size.Y,
+						`{size}: {name} off screen: {min} - {max}`
+					)
+					for otherName, other in panels do
+						if otherName ~= name and other.Visible then
+							assert(not overlaps(g, other), `{size}: {name} overlaps {otherName}`)
+						end
+					end
+				end
+				for _, name in { "DashButton", "SlideButton" } do
+					local s = panels[name].AbsoluteSize
+					assert(s.X >= 44 and s.Y >= 44, `{size}: {name} too small to tap: {s}`)
+				end
+				-- The stamina pips sit above the Noise caption, not on it
+				local caption = panels.NoiseMeter:FindFirstChild("Caption") :: TextLabel
+				assert(not overlaps(panels.StaminaBar, caption), `{size}: StaminaBar overlaps the Noise caption`)
 			end)
 			cleanup()
 			if not ok then

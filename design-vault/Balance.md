@@ -19,3 +19,10 @@ The numbers. Change values here first, then in code (the Lead keeps them in sync
 | Plank creak | 0.4 for 0.4 | noise / s | Smaller warning than a puddle (sprint 34) |
 | Hazard cooldown | 1 | s per player | No spam from standing on one |
 | Hall layouts | 3 | | Picked at random each round (sprint 34) |
+| Exits (sprint 39) | 3 | — | Walks from each spawn to each exit are 446–519 studs on the bigger map |
+| Round length | 180 | s | Longer for the bigger map; a full-round walker reaches about 2.7 of 3.43 studs of water (sprint 39) |
+| Stamina pips | 3, +1 per 2.5 s after 0.5 s | pips | Movement tech (sprint 39) |
+| Dash / dash jump | 1 / 2 pips, ~18 studs in 0.25 s | | One air dash per jump; noise 1.0 for 0.5 s |
+| Slide | free, needs ≥18 studs/s, ~1 s | | A slide hop keeps the speed; noise 0.6 for 0.4 s |
+| Double jump / wall jump | 1 pip / first free, then 0.5 | | Noise 0.6 for 0.4 s |
+| Move remote limit | 5 | per s per player | Server-checked in `MovementNoise.luau` |

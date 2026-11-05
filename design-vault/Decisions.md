@@ -2,6 +2,9 @@
 
 Newest first. One entry per decision: what, why, alternatives considered.
 
+## 2026-11-05 — Sprint 39: bigger school, Deadlock-style movement
+What: the map is about 1.7× longer (446–519 studs from spawns to exits) and the round is 180 s. The new movement is stamina pips, dash, dash jump, slide, slide hop, double jump and wall jump. Every move makes noise on the server, rate-limited to 5 per second. Why: the user asked for it. Making movement loud keeps it as an escape tool with a cost rather than plain power (pillar: speed is noise). Alternatives: silent movement (rejected because it would break the core loop), and a server-simulated dash (rejected because of input lag; the client moves and the server only adds noise).
+
 ## 2026-11-05 — Sprint 36: routes, 3 exits, a pathfinding monster
 What: the hall now branches (back corridor, cross halls, through-classrooms, gym) and has 3 exits. The monster uses PathfindingService, patrols when it hears nothing, pauses 2 s to listen and lunges within 15 studs. Client dread effects and a jumpscare were added. Why: route choice against a monster you can hear is a real decision, and before this it slid through walls. Alternatives: hand-placed waypoints (brittle across 3 layouts); standing idle when nothing is heard (QA found it felt dead, so we switched to patrol).
 

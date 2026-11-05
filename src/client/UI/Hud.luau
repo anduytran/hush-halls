@@ -1,7 +1,11 @@
 --!strict
--- In-round HUD: round state + timer, water bar, noise meter, coins and the hold-to-sprint button.
+-- In-round HUD: round state + timer, water bar, noise meter, stamina pips, coins, the hold-to-sprint button
+-- and the touch DASH/SLIDE buttons.
 -- Reads attributes on ReplicatedStorage.State (see knowledge/planner/mvp-contracts.md) and fires
 -- ReplicatedStorage.Remotes.Sprint with true on press, false on release. See ui-vault/Screens/HUD.md.
+-- Stamina pips read the LocalPlayer attributes Stamina (0-3, fractional) and InRound. DASH/SLIDE call
+-- dash()/slide() on src/client/Movement.luau, required lazily inside pcall on tap
+-- (design-vault/Mechanics/Movement Tech.md).
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -20,6 +24,15 @@ local TITLE_FADE_IN = 0.25
 local TITLE_HOLD = 3
 local TITLE_FADE_OUT = 0.75
 local NOISE_DANGER = 0.6
+local STAMINA_PIPS = 3
+-- A pip that drops by more than this in one update counts as spent and flashes
+local STAMINA_SPENT_STEP = 0.05
+local PIP_FLASH_TIME = 0.35
+-- Gap between the movement buttons and between them and the SprintButton
+local BUTTON_GAP = 8
+
+local RUNNING_TEXT = "Find an exit. Sprinting is loud."
+local RUNNING_TEXT_KEYBOARD = "Find an exit. Q dash, C slide."
 
 local COLOR_BG = Color3.fromHex("#0F1115")
 local COLOR_ACCENT = Color3.fromHex("#F5A524")
@@ -85,6 +98,40 @@ local function panel(parent: Instance, name: string): Frame
 	corner(f)
 	f.Parent = parent
 	return f
+end
+
+-- Round touch button in the SprintButton style: amber circle, dark bold text, 0.15 transparency at rest.
+-- scale is the scale size; minPx/maxPx clamp it (square).
+local function roundButton(parent: Instance, name: string, text: string, scale: number, minPx: number, maxPx: number)
+	local b = Instance.new("TextButton")
+	b.Name = name
+	b.AnchorPoint = Vector2.new(1, 1)
+	b.Size = UDim2.fromScale(scale, scale)
+	b.BackgroundColor3 = COLOR_ACCENT
+	b.BackgroundTransparency = 0.15
+	b.AutoButtonColor = false
+	b.FontFace = FONT_BOLD
+	b.Text = text
+	b.TextColor3 = COLOR_BG
+	b.TextScaled = true
+	corner(b, UDim.new(1, 0))
+	local aspect = Instance.new("UIAspectRatioConstraint")
+	aspect.AspectRatio = 1
+	aspect.Parent = b
+	local limit = Instance.new("UISizeConstraint")
+	limit.MinSize = Vector2.new(minPx, minPx)
+	limit.MaxSize = Vector2.new(maxPx, maxPx)
+	limit.Parent = b
+	local textLimit = Instance.new("UITextSizeConstraint")
+	textLimit.MinTextSize = 14
+	textLimit.MaxTextSize = 22
+	textLimit.Parent = b
+	local pad = Instance.new("UIPadding")
+	pad.PaddingLeft = UDim.new(0, 8)
+	pad.PaddingRight = UDim.new(0, 8)
+	pad.Parent = b
+	b.Parent = parent
+	return b
 end
 
 local function formatTime(seconds: number): string
@@ -275,12 +322,14 @@ function Hud.mount()
 	end
 	table.insert(connections, gui.Destroying:Connect(disconnectAll))
 
-	local function setGoal(roundState: any, escaped: boolean)
+	-- keyboard defaults to KeyboardEnabled: keyboard players get the Q/C dash and slide keys in the goal line
+	local function setGoal(roundState: any, escaped: boolean, keyboard: boolean?)
+		local hasKeyboard = if keyboard == nil then UserInputService.KeyboardEnabled else keyboard
 		if roundState == "Running" and escaped then
 			goalText.Text = "You escaped! Wait for the next round."
 			goalText.TextColor3 = COLOR_NOISE
 		elseif roundState == "Running" then
-			goalText.Text = "Find an exit. Sprinting is loud."
+			goalText.Text = if hasKeyboard then RUNNING_TEXT_KEYBOARD else RUNNING_TEXT
 			goalText.TextColor3 = COLOR_TEXT
 		elseif roundState == "Ended" then
 			goalText.Text = "Round over."
@@ -361,37 +410,165 @@ function Hud.mount()
 	noiseCaption.Size = UDim2.new(1, 0, 0, 18)
 	noiseCaption.Text = "Noise"
 
+	-- Bottom centre, just above the Noise caption: 3 stamina pips (only while InRound). Each pip fills
+	-- left to right as it regenerates (dimmer until full) and flashes white when spent. Its bottom follows
+	-- NoiseMeter's real height (18-28 px clamp) plus the 18 px caption and a 6 px gap.
+	local stamina = Instance.new("Frame")
+	stamina.Name = "StaminaBar"
+	stamina.AnchorPoint = Vector2.new(0.5, 1)
+	stamina.Size = UDim2.fromScale(0.18, 0.03)
+	stamina.BackgroundTransparency = 1
+	stamina.Visible = false
+	local staminaLimit = Instance.new("UISizeConstraint")
+	staminaLimit.MinSize = Vector2.new(120, 14)
+	staminaLimit.MaxSize = Vector2.new(210, 20)
+	staminaLimit.Parent = stamina
+	local pipList = Instance.new("UIListLayout")
+	pipList.FillDirection = Enum.FillDirection.Horizontal
+	pipList.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	pipList.SortOrder = Enum.SortOrder.LayoutOrder
+	pipList.Padding = UDim.new(0, 6)
+	pipList.Parent = stamina
+	local pips: { { frame: Frame, fill: Frame, flash: Frame, last: number } } = {}
+	for i = 1, STAMINA_PIPS do
+		local pip = panel(stamina, "Pip" .. i)
+		pip.LayoutOrder = i
+		-- Thirds minus the two 6 px gaps
+		pip.Size = UDim2.new(1 / STAMINA_PIPS, -4, 1, 0)
+		local pipCorner = pip:FindFirstChildOfClass("UICorner") :: UICorner
+		pipCorner.CornerRadius = UDim.new(0, 4)
+		local pipStroke = Instance.new("UIStroke")
+		pipStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		pipStroke.Color = COLOR_ACCENT
+		pipStroke.Thickness = 1
+		pipStroke.Transparency = 0.6
+		pipStroke.Parent = pip
+		local fill = Instance.new("Frame")
+		fill.Name = "Fill"
+		fill.Size = UDim2.fromScale(1, 1)
+		fill.BackgroundColor3 = COLOR_ACCENT
+		fill.BorderSizePixel = 0
+		corner(fill, UDim.new(0, 4))
+		fill.Parent = pip
+		local flash = Instance.new("Frame")
+		flash.Name = "Flash"
+		flash.Size = UDim2.fromScale(1, 1)
+		flash.BackgroundColor3 = COLOR_TEXT
+		flash.BackgroundTransparency = 1
+		flash.BorderSizePixel = 0
+		flash.ZIndex = 2
+		corner(flash, UDim.new(0, 4))
+		flash.Parent = pip
+		pips[i] = { frame = pip, fill = fill, flash = flash, last = 1 }
+	end
+	stamina.Parent = gui
+	local function placeStamina()
+		stamina.Position = UDim2.new(0.5, 0, 1, -(12 + noise.AbsoluteSize.Y + 4 + 18 + 6))
+	end
+	placeStamina()
+	table.insert(connections, noise:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeStamina))
+
+	-- value is 0-3 stamina; nil (Movement hasn't set it yet) reads as full
+	local function renderStamina(value: number?)
+		local v = math.clamp(if typeof(value) == "number" then value else STAMINA_PIPS, 0, STAMINA_PIPS)
+		for i, pip in pips do
+			local f = math.clamp(v - (i - 1), 0, 1)
+			pip.fill.Size = UDim2.fromScale(f, 1)
+			pip.fill.Visible = f > 0
+			-- Regenerating pips are dimmer so a full pip reads as ready
+			pip.fill.BackgroundTransparency = if f >= 1 then 0 else 0.45
+			if f < pip.last - STAMINA_SPENT_STEP then
+				pip.flash.BackgroundTransparency = 0.1
+				TweenService:Create(
+					pip.flash,
+					TweenInfo.new(PIP_FLASH_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+					{ BackgroundTransparency = 1 }
+				):Play()
+			end
+			pip.last = f
+		end
+	end
+	renderStamina(nil)
+
 	-- Bottom right: hold-to-sprint (touch only; PC uses LeftShift)
-	local sprintButton = Instance.new("TextButton")
-	sprintButton.Name = "SprintButton"
-	sprintButton.AnchorPoint = Vector2.new(1, 1)
+	local sprintButton = roundButton(gui, "SprintButton", "SPRINT", 0.16, 72, 120)
 	sprintButton.Position = UDim2.new(1, -16, 1, -16)
-	sprintButton.Size = UDim2.fromScale(0.16, 0.16)
-	sprintButton.BackgroundColor3 = COLOR_ACCENT
-	sprintButton.BackgroundTransparency = 0.15
-	sprintButton.AutoButtonColor = false
-	sprintButton.FontFace = FONT_BOLD
-	sprintButton.Text = "SPRINT"
-	sprintButton.TextColor3 = COLOR_BG
-	sprintButton.TextScaled = true
 	sprintButton.Visible = UserInputService.TouchEnabled
-	corner(sprintButton, UDim.new(1, 0))
-	local sprintAspect = Instance.new("UIAspectRatioConstraint")
-	sprintAspect.AspectRatio = 1
-	sprintAspect.Parent = sprintButton
-	local sprintLimit = Instance.new("UISizeConstraint")
-	sprintLimit.MinSize = Vector2.new(72, 72)
-	sprintLimit.MaxSize = Vector2.new(120, 120)
-	sprintLimit.Parent = sprintButton
-	local sprintText = Instance.new("UITextSizeConstraint")
-	sprintText.MinTextSize = 14
-	sprintText.MaxTextSize = 22
-	sprintText.Parent = sprintButton
-	local sprintPad = Instance.new("UIPadding")
-	sprintPad.PaddingLeft = UDim.new(0, 8)
-	sprintPad.PaddingRight = UDim.new(0, 8)
-	sprintPad.Parent = sprintButton
-	sprintButton.Parent = gui
+
+	-- Touch DASH and SLIDE (PC uses Q and C), smaller, in a row above the SprintButton: DASH centred over
+	-- it, SLIDE to DASH's left. Kept above it so they stay clear of the NoiseMeter and StaminaBar on a
+	-- 375 px portrait phone. Shown only on touch and while InRound.
+	local dashButton = roundButton(gui, "DashButton", "DASH", 0.12, 56, 96)
+	local slideButton = roundButton(gui, "SlideButton", "SLIDE", 0.12, 56, 96)
+	dashButton.Visible = false
+	slideButton.Visible = false
+	local function placeMoveButtons()
+		local sprintSize = sprintButton.AbsoluteSize
+		local size = dashButton.AbsoluteSize
+		local right = 16 + (sprintSize.X - size.X) / 2
+		local bottom = 16 + sprintSize.Y + BUTTON_GAP
+		dashButton.Position = UDim2.new(1, -right, 1, -bottom)
+		slideButton.Position = UDim2.new(1, -(right + size.X + BUTTON_GAP), 1, -bottom)
+	end
+	placeMoveButtons()
+	table.insert(connections, sprintButton:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeMoveButtons))
+	table.insert(connections, dashButton:GetPropertyChangedSignal("AbsoluteSize"):Connect(placeMoveButtons))
+
+	-- Spec overrides (Studio hooks only): nil means use the real TouchEnabled / InRound
+	local touchOverride: boolean? = nil
+	local inRoundOverride: boolean? = nil
+	local function refreshInRound()
+		local inRound = if inRoundOverride ~= nil then inRoundOverride else player:GetAttribute("InRound") == true
+		local touch = if touchOverride ~= nil then touchOverride else UserInputService.TouchEnabled
+		stamina.Visible = inRound
+		dashButton.Visible = touch and inRound
+		slideButton.Visible = touch and inRound
+	end
+	refreshInRound()
+	table.insert(connections, player:GetAttributeChangedSignal("InRound"):Connect(refreshInRound))
+	table.insert(
+		connections,
+		player:GetAttributeChangedSignal("Stamina"):Connect(function()
+			renderStamina(player:GetAttribute("Stamina"))
+		end)
+	)
+	renderStamina(player:GetAttribute("Stamina"))
+
+	-- Movement is built by another module; require it only on tap so a missing or broken module never
+	-- breaks the HUD. Warns once per HUD. Specs can swap in a stand-in with hooks.setMovement.
+	local movementOverride: any = nil
+	local movementWarned = false
+	local function callMovement(action: string): boolean
+		local ok, err = pcall(function()
+			local movement = movementOverride or require((script.Parent :: any).Parent.Movement) :: any
+			movement[action]()
+		end)
+		if not ok and not movementWarned then
+			movementWarned = true
+			warn(`[Hud] Movement.{action}() failed: {err}`)
+		end
+		return ok
+	end
+	local function tapButton(button: TextButton, action: string): boolean
+		button.BackgroundTransparency = 0
+		task.delay(0.12, function()
+			button.BackgroundTransparency = 0.15
+		end)
+		return callMovement(action)
+	end
+	for button, action in { [dashButton] = "dash", [slideButton] = "slide" } do
+		table.insert(
+			connections,
+			button.InputBegan:Connect(function(input)
+				if
+					input.UserInputType == Enum.UserInputType.Touch
+					or input.UserInputType == Enum.UserInputType.MouseButton1
+				then
+					tapButton(button, action)
+				end
+			end)
+		)
+	end
 
 	-- Centre: join title card, first HUD of the session only
 	if not titleShown then
@@ -521,8 +698,37 @@ function Hud.mount()
 	-- pressSprint/releaseSprint run the same press/release as a real touch (including the remote fire)
 	local hooks = testHooks[gui]
 	if hooks then
+		-- Also lets DASH/SLIDE show (they still need InRound, see forceInRound)
 		hooks.forceTouch = function(on: boolean)
 			sprintButton.Visible = on
+			touchOverride = on
+			refreshInRound()
+		end
+		-- true/false pins the InRound visibility of the stamina pips and DASH/SLIDE; nil goes back to the attribute
+		hooks.forceInRound = function(on: boolean?)
+			inRoundOverride = on
+			refreshInRound()
+		end
+		-- Renders a stamina value (0-3) as if the Stamina attribute had changed; never writes the attribute
+		hooks.setStamina = renderStamina
+		-- Each pip's fill (0-1), left to right
+		hooks.pipFills = function(): { number }
+			local fills = {}
+			for i, pip in pips do
+				fills[i] = pip.last
+			end
+			return fills
+		end
+		-- Stand-in for the Movement module (a table with dash/slide); nil goes back to the real one
+		hooks.setMovement = function(module: any)
+			movementOverride = module
+		end
+		-- Same as tapping the button; returns whether the Movement call succeeded
+		hooks.tapDash = function(): boolean
+			return tapButton(dashButton, "dash")
+		end
+		hooks.tapSlide = function(): boolean
+			return tapButton(slideButton, "slide")
 		end
 		hooks.pressSprint = function()
 			buttonDown(nil)

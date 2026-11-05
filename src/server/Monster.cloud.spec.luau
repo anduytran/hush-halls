@@ -43,8 +43,8 @@ if not hall:FindFirstChild("Floor") then
 	local floor = Instance.new("Part")
 	floor.Name = "Floor"
 	floor.Anchored = true
-	floor.Size = Vector3.new(100, 2, 320)
-	floor.Position = Vector3.new(-23, -1, 145) -- top at Y 0, x -73..27, z -15..305
+	floor.Size = Vector3.new(100, 2, 520)
+	floor.Position = Vector3.new(-23, -1, 245) -- top at Y 0, x -73..27, z -15..505 (Sprint 39: bigger school)
 	floor.Parent = hall
 end
 

@@ -1,5 +1,5 @@
 --!strict
--- Round loop: Lobby (15s) -> Running (up to 120s) -> Ended (5s) -> Lobby. Studio specs can shorten these
+-- Round loop: Lobby (15s) -> Running (up to 180s) -> Ended (5s) -> Lobby. Studio specs can shorten these
 -- with RoundService._test.setDurations.
 -- Players who touch Hall.Exit (or any part in Hall.Exits) while Running escape, once per round: +10 Coins and a
 -- teleport to the lobby platform above Start.
@@ -14,7 +14,7 @@ local RunService = game:GetService("RunService")
 local GameState = require(ReplicatedStorage.Shared.GameState)
 
 local LOBBY_TIME = 15
-local RUN_TIME = 120
+local RUN_TIME = 180 -- Sprint 39: the school is ~1.7x bigger (was 120)
 local ENDED_TIME = 5
 local ESCAPE_REWARD = 10
 local PLATFORM_HEIGHT = 30

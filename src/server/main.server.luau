@@ -5,6 +5,7 @@ local Atmosphere = require(script.Parent.Map.Atmosphere)
 local Hazards = require(script.Parent.Hazards)
 local Monetization = require(script.Parent.Monetization)
 local Monster = require(script.Parent.Monster)
+local MovementNoise = require(script.Parent.MovementNoise)
 local NoiseService = require(script.Parent.NoiseService)
 local RoundService = require(script.Parent.RoundService)
 
@@ -24,6 +25,7 @@ local START_RETRY_DELAY = 5
 local START_RETRIES = 5
 local systems: { { name: string, start: () -> () } } = {
 	{ name = "NoiseService", start = NoiseService.start },
+	{ name = "MovementNoise", start = MovementNoise.start },
 	{ name = "Monster", start = Monster.start },
 	{ name = "RoundService", start = RoundService.start },
 	{ name = "Hazards", start = Hazards.start },

@@ -464,7 +464,7 @@ local tests = {
 		end
 	end,
 
-	-- Sprint 20: the duration hook is Studio only, takes seconds >= 0.5, and resetDurations() restores 15/120/5.
+	-- Sprint 20: the duration hook is Studio only, takes seconds >= 0.5, and resetDurations() restores 15/180/5.
 	["setDurations checks its seconds and resetDurations restores the defaults"] = function()
 		local setDurations = RoundService._test.setDurations
 		if not RunService:IsStudio() then
@@ -478,13 +478,13 @@ local tests = {
 			assert(not pcall(setDurations, 1, 2, bad), `ended {tostring(bad)} should be rejected`)
 		end
 		local lobby, running, ended = RoundService._test.durations()
-		assert(lobby == 15 and running == 120 and ended == 5, "a rejected call should leave the defaults")
+		assert(lobby == 15 and running == 180 and ended == 5, "a rejected call should leave the defaults")
 		setDurations(0.5, 2, 1)
 		lobby, running, ended = RoundService._test.durations()
 		assert(lobby == 0.5 and running == 2 and ended == 1, `expected 0.5/2/1, got {lobby}/{running}/{ended}`)
 		RoundService._test.resetDurations()
 		lobby, running, ended = RoundService._test.durations()
-		assert(lobby == 15 and running == 120 and ended == 5, `expected 15/120/5, got {lobby}/{running}/{ended}`)
+		assert(lobby == 15 and running == 180 and ended == 5, `expected 15/180/5, got {lobby}/{running}/{ended}`)
 	end,
 
 	-- Sprint 20: with the hook unused, the Lobby still counts down in whole seconds from 15.
@@ -497,7 +497,7 @@ local tests = {
 			return
 		end
 		local lobby, running, ended = RoundService._test.durations()
-		assert(lobby == 15 and running == 120 and ended == 5, `expected 15/120/5, got {lobby}/{running}/{ended}`)
+		assert(lobby == 15 and running == 180 and ended == 5, `expected 15/180/5, got {lobby}/{running}/{ended}`)
 		RoundService.start()
 		assert(state:GetAttribute("TimeLeft") == 15, `expected TimeLeft 15, got {state:GetAttribute("TimeLeft")}`)
 		-- Sprint 22: waits for the first change instead of sampling at set times. The next value must be 14,
@@ -889,9 +889,10 @@ local tests = {
 			assert(point.Transparency == 1, `Start{i} should be invisible`)
 			assert(not point.CanCollide, `Start{i} should not collide`)
 			if exit then
+				-- Sprint 39: the bigger school keeps every spawn at least 100 studs from the monster entry.
 				local flat = Vector3.new(point.Position.X - exit.Position.X, 0, point.Position.Z - exit.Position.Z)
 				assert(
-					flat.Magnitude >= 66,
+					flat.Magnitude >= 100,
 					`Start{i} is only {math.floor(flat.Magnitude)} studs from the monster entry`
 				)
 			end

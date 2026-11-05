@@ -69,13 +69,25 @@ local LUNGE_BONUS = 8 -- extra studs/s while lunging
 -- DRIFT_SPEED, pathfinding to random points in these floor areas. Interiors come from Map/HallBuilder.luau
 -- (main hall segments A/B/C, back corridor, gym), shrunk ~4 studs from each wall so AGENT_RADIUS fits.
 -- The gym stops short of the bleachers along its north wall.
+-- Sprint 39: the school is ~1.7x longer, with five cross halls and four link rooms between the back corridor
+-- and the main hall. Each cross hall and link room gets a small area down its middle (link rooms: the door
+-- lane, clear of the desks), so it patrols every part of the map.
 type Area = { name: string, x0: number, x1: number, z0: number, z1: number }
 local PATROL_AREAS: { Area } = {
-	{ name = "HallA", x0 = -8, x1 = 8, z0 = 4, z1 = 96 },
-	{ name = "HallB", x0 = 4, x1 = 20, z0 = 104, z1 = 196 },
-	{ name = "HallC", x0 = -8, x1 = 8, z0 = 204, z1 = 290 },
-	{ name = "BackCorridor", x0 = -36, x1 = -32, z0 = 38, z1 = 278 },
-	{ name = "Gym", x0 = -66, x1 = -46, z0 = 220, z1 = 250 },
+	{ name = "HallA", x0 = -8, x1 = 8, z0 = 4, z1 = 166 },
+	{ name = "HallB", x0 = 4, x1 = 20, z0 = 174, z1 = 336 },
+	{ name = "HallC", x0 = -8, x1 = 8, z0 = 344, z1 = 490 },
+	{ name = "BackCorridor", x0 = -36, x1 = -32, z0 = 4, z1 = 486 },
+	{ name = "Gym", x0 = -66, x1 = -46, z0 = 394, z1 = 454 },
+	{ name = "CrossHall1", x0 = -22, x1 = -18, z0 = 24, z1 = 28 },
+	{ name = "CrossHall2", x0 = -22, x1 = -18, z0 = 114, z1 = 118 },
+	{ name = "CrossHall3", x0 = -22, x1 = -6, z0 = 254, z1 = 258 },
+	{ name = "CrossHall4", x0 = -22, x1 = -18, z0 = 376, z1 = 380 },
+	{ name = "CrossHall5", x0 = -22, x1 = -18, z0 = 478, z1 = 482 },
+	{ name = "LinkRoom1", x0 = -22, x1 = -18, z0 = 66, z1 = 74 },
+	{ name = "LinkRoom2", x0 = -22, x1 = -18, z0 = 144, z1 = 152 },
+	{ name = "LinkRoom3", x0 = -22, x1 = -18, z0 = 404, z1 = 412 },
+	{ name = "WindowRoom", x0 = -21, x1 = -19, z0 = 444, z1 = 460 },
 }
 local PATROL_MIN_LEG = 20 -- a new patrol point is at least this far away (flat), so it walks somewhere
 local PATROL_PICK_TRIES = 8
