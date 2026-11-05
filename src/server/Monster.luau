@@ -6,6 +6,8 @@
 -- and lunges when it is close to a heard player. Its look comes from Map.MonsterModel; the root part is invisible.
 -- Sprint 37: with nobody heard it patrols random points (PATROL_AREAS) at DRIFT_SPEED instead of standing still,
 -- it enters on the floor instead of at the Exit trigger's mid-height, and there is only ever one Monster/Body.
+-- Sprint 37 (animation): the root carries `State` (Idle, Patrol, Chase, Lunge, Listen, Kill) and `Speed`
+-- (measured flat studs/s) attributes. They are only for looks: src/client/MonsterAnimator.luau reads them.
 
 local PathfindingService = game:GetService("PathfindingService")
 local Players = game:GetService("Players")
@@ -80,6 +82,12 @@ local PATROL_PICK_TRIES = 8
 local STUCK_CHECK = 5 -- seconds; patrolling and moved under STUCK_MOVE in that time picks a new point
 local STUCK_MOVE = 2
 local ENTRY_INSET = 6 -- enters this far in from the Exit toward Start, clear of the end wall
+
+-- Animation attributes (Sprint 37).
+local KILL_ANIM_TIME = 1.2 -- State stays Kill this long after a catch
+local SPEED_SMOOTH_RATE = 8 -- per second; measured speed is smoothed so path corners don't flicker it
+local SPEED_STEP = 0.5 -- Speed is written rounded to this, and only when it changes
+type AnimState = "Idle" | "Patrol" | "Chase" | "Lunge" | "Listen" | "Kill"
 
 type Sample = { root: BasePart, position: Vector3, speed: number }
 
@@ -415,6 +423,21 @@ local function run(hall: Instance)
 	local stuckFrom = Vector3.zero
 	local stuckAt = 0
 
+	-- Animation attributes (Sprint 37).
+	local killUntil = 0
+	local smoothSpeed = 0
+
+	local function setAnim(animState: AnimState, speed: number)
+		if body:GetAttribute("State") ~= animState then
+			body:SetAttribute("State", animState)
+		end
+		local rounded = math.floor(speed / SPEED_STEP + 0.5) * SPEED_STEP
+		if body:GetAttribute("Speed") ~= rounded then
+			body:SetAttribute("Speed", rounded)
+		end
+	end
+	setAnim("Idle", 0)
+
 	-- Drops the current path. Bumping generation also drops a path still being computed for the old goal,
 	-- so it can't land as the waypoints for a new one.
 	local function clearPath()
@@ -561,15 +584,17 @@ local function run(hall: Instance)
 		local humanoid = character:FindFirstChildOfClass("Humanoid")
 		if humanoid and humanoid.Health > 0 then
 			humanoid.Health = 0
+			killUntil = os.clock() + KILL_ANIM_TIME
+			setAnim("Kill", smoothSpeed)
 			safeSound(scream, function(sound)
 				sound:Play()
 			end)
 		end
 	end
 
-	local function onHeartbeat(dt: number)
+	-- One frame of movement. Returns the animation state for what it did.
+	local function step(dt: number, now: number): AnimState
 		sampleSpeeds()
-		local now = os.clock()
 
 		local noise = state:GetAttribute("Noise")
 		local level = math.clamp(if typeof(noise) == "number" then noise else 0, 0, 1)
@@ -586,8 +611,9 @@ local function run(hall: Instance)
 			listenUntil = nil -- hearing someone ends a listen pause at once
 			lastHeard = target
 			setMode("chase", now)
-			navigate(target, chaseSpeed(level, flatDistance(body.Position, target)), dt, now, true)
-			return
+			local distance = flatDistance(body.Position, target)
+			navigate(target, chaseSpeed(level, distance), dt, now, true)
+			return if distance <= LUNGE_RANGE then "Lunge" else "Chase"
 		end
 
 		local until_ = listenUntil
@@ -596,7 +622,7 @@ local function run(hall: Instance)
 			if now < until_ then
 				setMode("listen", now)
 				body.CFrame = body.CFrame * CFrame.Angles(0, LISTEN_TURN_RATE * dt, 0)
-				return
+				return "Listen"
 			end
 			listenUntil = nil
 		end
@@ -609,8 +635,9 @@ local function run(hall: Instance)
 				lastHeard = nil
 				listenUntil = now + LISTEN_TIME
 				setMode("listen", now)
+				return "Listen"
 			end
-			return
+			return "Patrol"
 		end
 
 		-- Nothing heard: patrol to random points across the hall, corridor and gym.
@@ -636,6 +663,16 @@ local function run(hall: Instance)
 			patrolGoal = nil
 			clearPath()
 		end
+		return "Patrol"
+	end
+
+	local function onHeartbeat(dt: number)
+		local now = os.clock()
+		local before = body.Position
+		local animState = step(dt, now)
+		local speed = if dt > 0 then flatDistance(body.Position, before) / dt else 0
+		smoothSpeed += (speed - smoothSpeed) * (1 - math.exp(-SPEED_SMOOTH_RATE * dt))
+		setAnim(if now < killUntil then "Kill" else animState, smoothSpeed)
 	end
 
 	local function endRound()
@@ -657,6 +694,9 @@ local function run(hall: Instance)
 		safeSound(growl, function(sound)
 			sound:Stop()
 		end)
+		killUntil = 0
+		smoothSpeed = 0
+		setAnim("Idle", 0)
 	end
 
 	local function beginRound()

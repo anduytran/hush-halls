@@ -24,6 +24,15 @@ In [[Balance]]: listen pause 2 s, lunge range 15 studs, lunge speed +8, dread st
 - [ ] Vignette/shake rise smoothly from 50 studs; a catch shows the jumpscare once; no effects linger after respawn.
 - [ ] All 3 layouts, hazards and round flow still work; no Output errors; part count under 2,000.
 
+## Animation (sprint 37) — acceptance criteria
+- [x] Walk cycle: legs stride and arms swing, both scaled to speed; a slow, lurching gait on patrol. (playtested)
+- [x] Chase/lunge: the body leans forward, arms reach out ahead, and the stride is faster. (lunge seen in a screenshot)
+- [x] Listen: it stops, tilts its head side to side and twitches. (state forced on the client)
+- [x] The jaw slowly hangs and snaps; it opens wide on a catch. (kill state forced, not a real catch)
+- [ ] Animated on the client, from a `State` attribute on `Hall.Monster`; no Output errors; it still works if the client joins mid-round. (a rebuild works; joining mid-round untested)
+
+Implementation: Motor6Ds in `MonsterModel.luau`, plus a `Root` joint for the bob. The server sets the `State`/`Speed` attributes in `Monster.luau`, and the client drives them in `src/client/MonsterAnimator.luau`, which skips animating beyond 250 studs. The joint names are listed in both files.
+
 ## Status (sprint 36)
 Built. Checks pass.
 - Seen in a server playtest: patrol, chase through a cross-hall doorway, lunge (speed about 26), the 2 s pause, all 3 exits paying once (fire exit tested), and part counts of 1,857–1,900.

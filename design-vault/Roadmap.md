@@ -14,8 +14,10 @@ Done (history in git log):
 
 - [x] Sprint 35: [[Mechanics/Map Overhaul]], the hall is now a flooded school at night (tiles, panelled walls, ceiling, lockers, 6 classrooms, 12 lamps with 3 flickering, EXIT double door, teal fog, murky water). Two live rounds: the monster caught both times, hazards fired.
 - [x] Sprint 36: [[Mechanics/Routes, Exits and Dread]]. A back corridor, cross halls, through-classrooms and a gym give several routes. There are 3 exits (main door, gym fire exit, broken window). The monster is now a gaunt eyeless creature that pathfinds, patrols, listens and lunges. On the client, vignette, shake and FOV build as it closes in, and a catch shows a jumpscare. Parts are down to about 1,900 per build.
+- [x] Sprint 37: the monster is animated on the client (lurching walk, lean and reach on chase, head tilts while listening, jaw snaps).
 
 ## Needs a playtest
+- Sprint 37: monster animations during real play (chase, listen and kill states coming from the server), and a client joining mid-round.
 - Sprint 36: dread effects and jumpscare on a real client; a real catch by the new monster; Studio has stale duplicate copies of MonsterModel, Props, Atmosphere and Hazards to delete (they may be the source of the 203785492 warning).
 - Two real clients at once (Test → Clients and Servers, by hand): second player caught/drowned, join mid-round, several escapes, slow loader spectates, leave mid-spawn; earlier stuck-at-Start spawn overlap.
 - Touch sprint button and HUD layout on a real phone/tablet (hold sprints, release walks, respawn mid-hold).
