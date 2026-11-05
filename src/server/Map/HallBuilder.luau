@@ -21,6 +21,9 @@
 -- 270 (fire exit), 275 (window) and 305 (main). Hall.Floor still covers the whole footprint (the water uses it).
 -- To stay under 2,000 parts: one floor overlay per section instead of checker tiles, and the wall lockers are
 -- cheap banks (one body, a door, vent and handle per locker) instead of 14-part Props lockers.
+-- Sprint 38 (spawn points): Hall.Starts holds 4 invisible, non-colliding 4x1x4 BaseParts: Start1 (on Hall.Start),
+-- Start2 (south end of the back corridor), Start3 (the side classroom at z 30) and Start4 (cross hall 1). They are
+-- outside Hall.Obstacles, so the same in every layout. Hall.Start is kept (the lobby platform and Monster use it).
 
 local CollectionService = game:GetService("CollectionService")
 local Workspace = game:GetService("Workspace")
@@ -903,7 +906,16 @@ function HallBuilder.build(): Model
 		end
 		dressFace(dressing, side.face, side.from, side.to, blocked, side.sparse)
 		for _, z in side.doors do
-			Props.classroomDoorway(dressing, faceFrame(side.face, z - side.face.a.Z, ROOM_LIFT, 0))
+			local room = Props.classroomDoorway(dressing, faceFrame(side.face, z - side.face.a.Z, ROOM_LIFT, 0))
+			-- Sprint 38: Start3 is in the first right-hand classroom, so its south desk is cleared away to give the
+			-- spawn point (and its +-2 overlap offset) open floor.
+			if side.doors == doorsA and z == doorsA[1] then
+				for _, desk in room:GetChildren() do
+					if desk:IsA("Model") and desk:GetPivot().Position.Z < z then
+						desk:Destroy()
+					end
+				end
+			end
 		end
 		for _, o in side.openings or {} do
 			doorFrame(dressing, side.face, o[1] - side.face.a.Z, o[2] - side.face.a.Z, o[3])
@@ -1119,6 +1131,34 @@ function HallBuilder.build(): Model
 	start.Material = Enum.Material.Concrete
 	start.TopSurface = Enum.SurfaceType.Smooth
 	start.Parent = hall
+
+	-- Sprint 38: the round spawn points. RoundService puts each player on one of these (spread out before any
+	-- is reused), falling back to Hall.Start. All sit on open floor, clear of lockers, desks and obstacles, at
+	-- least 200 studs' walk from every exit and far from the monster's entry by the main Exit.
+	local starts = Instance.new("Folder")
+	starts.Name = "Starts"
+	starts.Parent = hall
+	local startSpots: { { any } } = {
+		{ "Start1", Vector3.new(0, 0, 0) }, -- the main Start
+		{ "Start2", Vector3.new(backMid, 0, BACK_Z0 + 5) }, -- the south end of the back corridor
+		{ "Start3", Vector3.new(half + 6, 0, doorsA[1] - 2.5) }, -- in the first right-hand classroom (see above)
+		{ "Start4", Vector3.new(midX, 0, (CROSS_HALLS[1][1] + CROSS_HALLS[1][2]) / 2) }, -- the first cross hall
+	}
+	for _, spot in startSpots do
+		local point = box(
+			starts,
+			spot[1],
+			spot[2] - Vector3.new(2, 0, 2),
+			spot[2] + Vector3.new(2, 1, 2),
+			Color3.fromRGB(90, 90, 96),
+			Enum.Material.Concrete
+		)
+		point.CanCollide = false
+		point.CanQuery = false
+		point.CanTouch = false
+		point.CastShadow = false
+		point.Transparency = 1
+	end
 
 	-- Exit is the main exit: a walk-through trigger spanning the full corridor width at the far end.
 	-- Monster and the specs use it as the hall's far anchor.

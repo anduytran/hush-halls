@@ -131,6 +131,42 @@ local function makePlatform(hall: Instance, start: BasePart): BasePart
 	return part
 end
 
+-- Sprint 38: the round's spawn points, the BaseParts in Hall.Starts (sorted by name), or just Hall.Start if
+-- there are none.
+local function spawnPoints(hall: Instance, start: BasePart): { BasePart }
+	local points: { BasePart } = {}
+	local folder = hall:FindFirstChild("Starts")
+	if folder then
+		for _, child in folder:GetChildren() do
+			if child:IsA("BasePart") then
+				table.insert(points, child)
+			end
+		end
+	end
+	table.sort(points, function(a, b)
+		return a.Name < b.Name
+	end)
+	if #points == 0 then
+		table.insert(points, start)
+	end
+	return points
+end
+
+-- Gives each player a random spawn point. The points are shuffled and handed out in turn, so every point is
+-- used once before any is used twice.
+local function assignStarts(players: { Player }, points: { BasePart }): { [Player]: BasePart }
+	local order = table.clone(points)
+	for i = #order, 2, -1 do
+		local j = math.random(1, i)
+		order[i], order[j] = order[j], order[i]
+	end
+	local assigned: { [Player]: BasePart } = {}
+	for i, player in players do
+		assigned[player] = order[(i - 1) % #order + 1]
+	end
+	return assigned
+end
+
 -- Alive, still in the hall, and hasn't escaped.
 local function isActive(player: Player): boolean
 	return participants[player] == true and not dead[player] and not player:GetAttribute("Escaped")
@@ -312,7 +348,7 @@ function RoundService.start()
 
 	-- Sprint-7 fix: spawnAtStart is defined inside the round loop's step, so it's covered by its pcall and rollback.
 	step("the round loop", function()
-		local function spawnAtStart(player: Player, thisRound: number)
+		local function spawnAtStart(player: Player, thisRound: number, point: BasePart)
 			local character = loadCharacter(player)
 			-- Sprint 23: a player whose spawn outlasted the spawn wait was dropped from the round; they spectate.
 			if round ~= thisRound or player.Parent ~= Players or not participants[player] then
@@ -323,7 +359,8 @@ function RoundService.start()
 				participants[player] = nil
 				return
 			end
-			character:PivotTo(start.CFrame + Vector3.new(math.random(-2, 2), 4, math.random(-2, 2)))
+			-- Sprint 38: on the player's spawn point. The small random offset keeps players on one point apart.
+			character:PivotTo(point.CFrame + Vector3.new(math.random(-2, 2), 4, math.random(-2, 2)))
 			local humanoid = character:FindFirstChildOfClass("Humanoid")
 			if humanoid then
 				humanoid.Died:Connect(function()
@@ -360,21 +397,26 @@ function RoundService.start()
 					report(`[RoundService] couldn't rebuild the hall layout: {layoutErr}`)
 				end
 
-				-- Spawn everyone at Start, then start the clock once they're in place.
+				-- Spawn everyone on a random spawn point, then start the clock once they're in place.
 				round += 1
 				local thisRound = round
 				table.clear(participants)
 				table.clear(dead)
+				local roster: { Player } = {}
 				for _, player in getPlayers() do
-					participants[player] = true
+					if not participants[player] then
+						participants[player] = true
+						table.insert(roster, player)
+					end
 					player:SetAttribute("Escaped", false)
 				end
+				local points = assignStarts(roster, spawnPoints(hall, start))
 				spawning = true
 				local pending: { [Player]: boolean } = {}
-				for player in participants do
+				for _, player in roster do
 					pending[player] = true
 					task.spawn(function()
-						local ok, err = pcall(spawnAtStart, player, thisRound)
+						local ok, err = pcall(spawnAtStart, player, thisRound, points[player])
 						if not ok then
 							report(`[RoundService] couldn't spawn {player.Name}: {err}`)
 							participants[player] = nil
@@ -530,6 +572,9 @@ RoundService._test = {
 	end,
 	-- Sprint 22: called with each warning this module prints. A no-op unless a spec swaps it.
 	onWarn = function(_message: string) end,
+	-- Sprint 38: the spawn-point helpers the round loop uses.
+	spawnPoints = spawnPoints,
+	assignStarts = assignStarts,
 }
 
 return RoundService

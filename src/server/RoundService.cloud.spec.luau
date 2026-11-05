@@ -860,12 +860,102 @@ local tests = {
 		assert(#badSets == 0, `the mid-round joiner was set InRound too early, during: {table.concat(badSets, ", ")}`)
 		assert(joiner:GetAttribute("InRound") == true, "the joiner should be InRound in the next round")
 		assert(player:GetAttribute("InRound") == true, "the first player should be InRound in the next round too")
-		local start = (workspace:FindFirstChild("Hall") :: Instance):FindFirstChild("Start") :: BasePart
-		local offset = (joiner.Character :: Model):GetPivot().Position - start.Position
-		assert(
-			Vector3.new(offset.X, 0, offset.Z).Magnitude <= 3 and math.abs(offset.Y - 4) < 0.5,
-			`the joiner should be spawned at Start for the next round, was {offset} off`
-		)
+		-- Sprint 38: the joiner lands on one of the round's spawn points (Hall.Starts, or Hall.Start without them).
+		local liveHall = workspace:FindFirstChild("Hall") :: Instance
+		local points = RoundService._test.spawnPoints(liveHall, liveHall:FindFirstChild("Start") :: BasePart)
+		local position = (joiner.Character :: Model):GetPivot().Position
+		local nearest: Vector3? = nil
+		for _, point in points do
+			local offset = position - point.Position
+			if Vector3.new(offset.X, 0, offset.Z).Magnitude <= 3 and math.abs(offset.Y - 4) < 0.5 then
+				nearest = offset
+			end
+		end
+		assert(nearest, `the joiner should be spawned on a spawn point for the next round, was at {position}`)
+	end,
+
+	-- Sprint 38: every layout has Hall.Starts with 4 invisible, non-colliding spawn points, and Hall.Start is kept.
+	["Hall.Starts has 4 invisible, non-colliding spawn points and Hall.Start is kept"] = function()
+		local liveHall = workspace:FindFirstChild("Hall")
+		assert(liveHall, "workspace.Hall missing")
+		local keptStart = liveHall:FindFirstChild("Start")
+		assert(keptStart and keptStart:IsA("BasePart"), "Hall.Start should be kept")
+		local folder = liveHall:FindFirstChild("Starts")
+		assert(folder and folder:IsA("Folder"), "Hall.Starts folder missing")
+		local exit = liveHall:FindFirstChild("Exit") :: BasePart?
+		for i = 1, 4 do
+			local point = folder:FindFirstChild(`Start{i}`)
+			assert(point and point:IsA("BasePart"), `Hall.Starts.Start{i} should be a BasePart`)
+			assert(point.Transparency == 1, `Start{i} should be invisible`)
+			assert(not point.CanCollide, `Start{i} should not collide`)
+			if exit then
+				local flat = Vector3.new(point.Position.X - exit.Position.X, 0, point.Position.Z - exit.Position.Z)
+				assert(
+					flat.Magnitude >= 66,
+					`Start{i} is only {math.floor(flat.Magnitude)} studs from the monster entry`
+				)
+			end
+		end
+		assert(#folder:GetChildren() == 4, `Hall.Starts should hold 4 parts, has {#folder:GetChildren()}`)
+	end,
+
+	-- Sprint 38: players are spread over the spawn points before any is used twice, and without Hall.Starts
+	-- everyone goes to Hall.Start.
+	["spawn points are spread before reuse, and Hall.Start is the fallback"] = function()
+		local fakeHall = Instance.new("Folder")
+		local fakeStart = Instance.new("Part")
+		fakeStart.Name = "Start"
+		fakeStart.Parent = fakeHall
+		local players: { Player } = {}
+		for i = 1, 6 do
+			local fake = Instance.new("Folder")
+			fake.Name = `SpreadPlayer{i}`
+			table.insert(players, fake :: any)
+		end
+		local only = RoundService._test.spawnPoints(fakeHall, fakeStart)
+		assert(#only == 1 and only[1] == fakeStart, "without Hall.Starts the only spawn point should be Hall.Start")
+		for _, player in players do
+			assert(RoundService._test.assignStarts(players, only)[player] == fakeStart, "everyone should use Start")
+		end
+
+		local folder = Instance.new("Folder")
+		folder.Name = "Starts"
+		folder.Parent = fakeHall
+		for i = 1, 4 do
+			local point = Instance.new("Part")
+			point.Name = `Start{i}`
+			point.Parent = folder
+		end
+		local points = RoundService._test.spawnPoints(fakeHall, fakeStart)
+		assert(#points == 4, `spawnPoints should find the 4 Hall.Starts parts, found {#points}`)
+		local firstPicks: { [BasePart]: number } = {}
+		for _ = 1, 40 do
+			local assigned = RoundService._test.assignStarts(players, points)
+			local uses: { [BasePart]: number } = {}
+			for _, player in players do
+				local point = assigned[player]
+				assert(table.find(points, point), "each player should get one of the spawn points")
+				uses[point] = (uses[point] or 0) + 1
+			end
+			for _, point in points do
+				local count = uses[point] or 0
+				assert(
+					count >= 1 and count <= 2,
+					`6 players on 4 points should use each 1-2 times, {point.Name} had {count}`
+				)
+			end
+			local first = assigned[players[1]]
+			firstPicks[first] = (firstPicks[first] or 0) + 1
+		end
+		local distinct = 0
+		for _ in firstPicks do
+			distinct += 1
+		end
+		assert(distinct >= 2, "the first player's spawn point should be random across rounds")
+		fakeHall:Destroy()
+		for _, player in players do
+			(player :: any):Destroy()
+		end
 	end,
 
 	-- Sprint 23: one fake's LoadCharacter errors once at the round spawn. RoundService reports exactly one warning

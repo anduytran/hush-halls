@@ -24,6 +24,12 @@ In [[Balance]]: listen pause 2 s, lunge range 15 studs, lunge speed +8, dread st
 - [ ] Vignette/shake rise smoothly from 50 studs; a catch shows the jumpscare once; no effects linger after respawn.
 - [ ] All 3 layouts, hazards and round flow still work; no Output errors; part count under 2,000.
 
+## Spawn points (sprint 38) — acceptance criteria
+- [x] Each layout has 4 spawn points: the main Start, the south end of the back corridor, a classroom and the lobby end of a cross hall. They are BaseParts in `Hall.Starts`; `Hall.Start` is kept.
+- [x] Each player gets a random spawn each round; players spread across them before doubling up. (helpers checked 200×, live rounds spawned on Start4 then Start3)
+- [x] Every spawn is at least 200 studs walk from every exit and at least 60 studs from where the monster enters. (shortest walk 226, nearest to the monster entry 247)
+- [x] Players never spawn inside walls or props (clearance boxes checked; one classroom desk removed for Start3). Rounds, escapes and the spawn-overlap fix still work. Two real clients are untested.
+
 ## Animation (sprint 37) — acceptance criteria
 - [x] Walk cycle: legs stride and arms swing, both scaled to speed; a slow, lurching gait on patrol. (playtested)
 - [x] Chase/lunge: the body leans forward, arms reach out ahead, and the stride is faster. (lunge seen in a screenshot)
